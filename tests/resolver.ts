@@ -15,11 +15,12 @@ export class Resolver {
         order: Sdk.CrossChainOrder,
         signature: string,
         takerTraits: Sdk.TakerTraits,
-        amount: bigint
+        amount: bigint,
+        hashLock = order.escrowExtension.hashLockInfo
     ): TransactionRequest {
         const {r, yParityAndS: vs} = Signature.from(signature)
         const {args, trait} = takerTraits.encode()
-        const immutables = order.toSrcImmutables(chainId, new Sdk.Address(this.srcAddress), amount)
+        const immutables = order.toSrcImmutables(chainId, new Sdk.Address(this.srcAddress), amount, hashLock)
 
         return {
             to: this.srcAddress,

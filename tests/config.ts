@@ -2,11 +2,16 @@ import {z} from 'zod'
 import Sdk from '@1inch/cross-chain-sdk'
 import * as process from 'node:process'
 
+const bool = z
+    .string()
+    .transform((v) => v.toLowerCase() === 'true')
+    .pipe(z.boolean())
+
 const ConfigSchema = z.object({
     SRC_CHAIN_RPC: z.string().url(),
     DST_CHAIN_RPC: z.string().url(),
-    SRC_CHAIN_CREATE_FORK: z.coerce.boolean().default(true),
-    DST_CHAIN_CREATE_FORK: z.coerce.boolean().default(true)
+    SRC_CHAIN_CREATE_FORK: bool.default('true'),
+    DST_CHAIN_CREATE_FORK: bool.default('true')
 })
 
 const fromEnv = ConfigSchema.parse(process.env)

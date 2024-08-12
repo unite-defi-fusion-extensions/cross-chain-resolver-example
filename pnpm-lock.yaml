@@ -12,8 +12,8 @@ importers:
         specifier: 2.6.0
         version: 2.6.0(assert@2.1.0)
       '@1inch/cross-chain-sdk':
-        specifier: 0.0.23
-        version: 0.0.23(assert@2.1.0)
+        specifier: 0.0.27
+        version: 0.0.27(assert@2.1.0)
       dotenv:
         specifier: 16.4.5
         version: 16.4.5
@@ -119,8 +119,8 @@ packages:
       assert:
         optional: true
 
-  '@1inch/cross-chain-sdk@0.0.23':
-    resolution: {integrity: sha512-8dfwNTj+BAWFnPsfMe7jgAIMyxEpudwbObLY7i42XequTR8uc8qfq75/UFIKpJlDJbOpZGkhS/lm2fMBJIlNkw==, tarball: https://npm.pkg.github.com/download/@1inch/cross-chain-sdk/0.0.23/c23cf9235aedfc137a6f1dcf6e778021058031a5}
+  '@1inch/cross-chain-sdk@0.0.27':
+    resolution: {integrity: sha512-6uPcVIEVrP6kITiD3TwzYqEqKPOiKa2YZRroH6yGxROIhVxLi1lew+B4QlL13JB1aSa5Bm+bAHEkzkDzCCt24A==, tarball: https://npm.pkg.github.com/download/@1inch/cross-chain-sdk/0.0.27/ea271692169217aa5ed64c0c3789a11f62697b0d}
     engines: {node: '>=18.16.0'}
     peerDependencies:
       assert: ^2.0.0
@@ -2667,7 +2667,7 @@ snapshots:
     optionalDependencies:
       assert: 2.1.0
 
-  '@1inch/cross-chain-sdk@0.0.23(assert@2.1.0)':
+  '@1inch/cross-chain-sdk@0.0.27(assert@2.1.0)':
     dependencies:
       '@1inch/byte-utils': 2.6.0(assert@2.1.0)
       '@1inch/fusion-sdk': 2.1.5-rc.0(assert@2.1.0)(axios@1.7.2)
