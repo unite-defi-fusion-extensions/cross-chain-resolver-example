@@ -28,11 +28,6 @@ contract Resolver is Ownable {
     using ImmutablesLib for IBaseEscrow.Immutables;
     using TimelocksLib for Timelocks;
 
-    event Log(string, bytes32);
-    event Log(string, uint256);
-    event Log(string, Address);
-    event Log(string, Timelocks);
-
     error InvalidLength();
     error LengthMismatch();
 
@@ -58,7 +53,6 @@ contract Resolver is Ownable {
         TakerTraits takerTraits,
         bytes calldata args
     ) external payable onlyOwner {
-        emit Log("current", block.timestamp);
 
         IBaseEscrow.Immutables memory immutablesMem = immutables;
         immutablesMem.timelocks = TimelocksLib.setDeployedAt(immutables.timelocks, block.timestamp);
@@ -81,8 +75,6 @@ contract Resolver is Ownable {
     }
 
     function withdraw(IEscrow escrow, bytes32 secret, IBaseEscrow.Immutables calldata immutables) external {
-        uint256 start = immutables.timelocks.get(TimelocksLib.Stage.SrcWithdrawal);
-        uint256 end = immutables.timelocks.get(TimelocksLib.Stage.SrcCancellation);
         escrow.withdraw(secret, immutables);
     }
 
