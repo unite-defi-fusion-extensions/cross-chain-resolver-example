@@ -64,4 +64,11 @@ export class Resolver {
             data: this.iface.encodeFunctionData('withdraw', [escrow.toString(), secret, immutables.build()])
         }
     }
+
+    public cancel(side: 'src' | 'dst', escrow: Sdk.Address, immutables: Sdk.Immutables): TransactionRequest {
+        return {
+            to: side === 'src' ? this.srcAddress : this.dstAddress,
+            data: this.iface.encodeFunctionData('cancel', [escrow.toString(), immutables.build()])
+        }
+    }
 }

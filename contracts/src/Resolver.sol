@@ -78,6 +78,11 @@ contract Resolver is Ownable {
         escrow.withdraw(secret, immutables);
     }
 
+
+    function cancel(IEscrow escrow, IBaseEscrow.Immutables calldata immutables) external {
+        escrow.cancel(immutables);
+    }
+
     /**
      * @notice See {IResolverExample-arbitraryCalls}.
      */
