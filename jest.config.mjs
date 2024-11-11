@@ -17,6 +17,5 @@ export default {
     transformIgnorePatterns: [
         // "/node_modules/",
         // "\\.pnp\\.[^\\/]+$",
-        '<rootDir>/node_modules/.pnpm/(?!(axios|@1inch\\+cross-chain-sdk)@)',
     ]
 }
