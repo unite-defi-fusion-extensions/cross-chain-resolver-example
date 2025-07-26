@@ -3,15 +3,15 @@
   "version": "1.0.0",
   "description": "Example of 1inch cross chain resolver",
   "scripts": {
-    "test": "forge build && node --experimental-vm-modules ./node_modules/jest/bin/jest.js",
+    "test": "forge build && node --experimental-vm-modules ./node_modules/jest/bin/jest.js --setupFiles dotenv/config --",
     "lint": "eslint  \"tests/**/*.ts\""
   },
   "devDependencies": {
     "@1inch/eslint-config": "^v3.0.7",
+    "@1inch/tsconfig": "1.0.7",
     "@eslint/compat": "1.1.0",
     "@eslint/eslintrc": "^3.1.0",
     "@eslint/js": "^9.10.0",
-    "@1inch/tsconfig": "1.0.7",
     "@jest/globals": "29.7.0",
     "@swc/core": "1.5.25",
     "@swc/jest": "0.2.36",
@@ -19,6 +19,8 @@
     "@types/node": "^22.16.0",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
+    "bitcoinjs-lib": "^6.1.7",
+    "ecpair": "^3.0.0",
     "eslint": "~9.6.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-config-standard": "^17.1.0",
@@ -30,6 +32,8 @@
     "eslint-plugin-unused-imports": "^4.1.4",
     "jest": "29.7.0",
     "prettier": "^3.2.5",
+    "regtest-client": "^0.2.1",
+    "tiny-secp256k1": "^2.2.4",
     "typescript": "5.5.2",
     "zod": "3.23.8"
   },

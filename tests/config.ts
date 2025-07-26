@@ -11,7 +11,8 @@ const ConfigSchema = z.object({
     SRC_CHAIN_RPC: z.string().url(),
     DST_CHAIN_RPC: z.string().url(),
     SRC_CHAIN_CREATE_FORK: bool.default('true'),
-    DST_CHAIN_CREATE_FORK: bool.default('true')
+    DST_CHAIN_CREATE_FORK: bool.default('true'),
+    BTC_CHAIN_RPC: z.string().url()
 })
 
 const fromEnv = ConfigSchema.parse(process.env)
@@ -45,6 +46,9 @@ export const config = {
                     donor: '0x4188663a85C92EEa35b5AD3AA5cA7CeB237C6fe9'
                 }
             }
+        },
+        btc: {
+            url: fromEnv.BTC_CHAIN_RPC
         }
     }
 } as const
