@@ -32,7 +32,7 @@ const userPk = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b7869
 const resolverPk = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a'
 
 // eslint-disable-next-line max-lines-per-function
-describe('Resolving example', () => {
+describe.only('Resolving example', () => {
     const srcChainId = config.chain.source.chainId
     const dstChainId = config.chain.destination.chainId
 
