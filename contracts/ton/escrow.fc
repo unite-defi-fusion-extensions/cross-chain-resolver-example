@@ -17,7 +17,7 @@ slice get_jetton_wallet() method_id {
 }
 
 
-int has_swap(int swapId) method_id {
+int get_has_swap(int swapId) method_id {
     var (_, _, swaps, _) = load_data();
     var (_, found) = swaps.udict_get?(256, swapId);
     return found ? 1 : 0;
