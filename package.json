@@ -5,7 +5,7 @@
   "scripts": {
     "test": "forge build && node --experimental-vm-modules ./node_modules/jest/bin/jest.js --setupFiles dotenv/config --",
     "lint": "eslint  \"tests/**/*.ts\"",
-    "test-ton" : "func-js contracts/ton/escrow.fc --boc build/escrow.cell && forge build && node --experimental-vm-modules ./node_modules/jest/bin/jest.js --setupFiles dotenv/config --"
+    "test-ton": "func-js contracts/ton/escrow.fc --boc build/escrow.cell && forge build && node --experimental-vm-modules ./node_modules/jest/bin/jest.js --setupFiles dotenv/config --"
   },
   "devDependencies": {
     "@1inch/eslint-config": "^v3.0.7",
@@ -58,6 +58,7 @@
     "@ton/crypto": "^3.3.0",
     "@ton/ton": "^15.3.1",
     "axios": "^1.11.0",
+    "bitcoin-core": "^5.0.0",
     "dotenv": "16.4.5",
     "ethers": "6.13.2",
     "prool": "0.0.24",

@@ -33,6 +33,7 @@ const { BTC_RPC_HOST, BTC_RPC_PORT, BTC_RPC_USER, BTC_RPC_PASS } = process.env;
 const userPk = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
 const resolverPk = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a'
 const BTC_DUMMY_ASSET = '0x000000000000000000000000000000000000dEaD'
+const BTC_SAT_ASSET = '0x000000000000000000000000000000000000dEaD'
 
 jest.setTimeout(1000 * 60 * 15) // 15 minute timeout for on-chain actions
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -126,10 +127,27 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         resolver = new Wallet(resolverPk, src.provider);
         srcFactory = new EscrowFactory(src.provider, src.escrowFactory);
 
+        await user.topUpFromDonor(
+            config.chain.source.tokens.USDC.address,
+            config.chain.source.tokens.USDC.donor,
+            parseUnits('1000', 6)
+        )
         await resolver.topUpFromDonor(config.chain.source.tokens.USDC.address, config.chain.source.tokens.USDC.donor, parseUnits('1000', 6));
-        await resolver.approveToken(config.chain.source.tokens.USDC.address, config.chain.source.limitOrderProtocol, MaxUint256);
-        await user.topUpFromDonor(getAddress('0x0000000000000000000000000000000000000000'), getAddress('0x00000000219ab540356cBB839Cbe05303d7705Fa'), parseEther('10'));
-
+        await resolver.approveToken(
+            config.chain.source.tokens.USDC.address,
+            config.chain.source.limitOrderProtocol,
+            MaxUint256
+        );
+        await user.approveToken(
+            config.chain.source.tokens.USDC.address,
+            config.chain.source.limitOrderProtocol,
+            MaxUint256
+        );
+        await resolver.approveToken(
+            config.chain.source.tokens.USDC.address,
+            config.chain.source.limitOrderProtocol,
+            MaxUint256
+        )
         srcTimestamp = BigInt((await src.provider.getBlock('latest'))!.timestamp);
         const requiredBalanceSats = btcAmountSats + 5000;
         let balance = await btcClient.getBalance();
@@ -283,42 +301,18 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         
         console.log(`[SUCCESS] Transaction was correctly rejected by the node.`);
     });
-    /*
+    
     it('should swap User:BTC for Resolver:USDC', async () => {
         const btcAmountSats = 20000;
         const usdcAmount = parseUnits('10', 6);
-        const requiredBalanceSats = btcAmountSats + 1000; // Amount needed + buffer for fees
 
-        // --- 1. GENERATE BTC ADDRESS AND WAIT FOR FUNDING ---
-        const userFundingAddress = await btcClient.getNewAddress("user_funding_wallet");
-        console.log('\n\n\n================ ACTION REQUIRED ================');
-        console.log(`Please send at least ${requiredBalanceSats} sats (Signet BTC) to this address:`);
-        console.log(`\n${userFundingAddress}\n`);
-        console.log('You can use a faucet like https://signet257.bublina.eu.org/');
-        console.log('====================================================\n');
-        console.log('Polling wallet for funds...');
-
-        // Poll for balance
-        let balanceSats = 0;
-        for (let i = 0; i < 90; i++) { // Wait up to 15 minutes
-            const unspent = await btcClient.listUnspent(1, 9999999, [userFundingAddress]);
-            balanceSats = unspent.reduce((total, utxo) => total + Math.round(utxo.amount * 1e8), 0);
-            if (balanceSats >= requiredBalanceSats) {
-                console.log(`Funds received! Balance: ${balanceSats} sats. Continuing test...`);
-                break;
-            }
-            await sleep(10000); // Wait 10 seconds before polling again
-        }
-        if (balanceSats < requiredBalanceSats) {
-            throw new Error(`Test timed out. Wallet was not funded with at least ${requiredBalanceSats} sats.`);
-        }
         // --- 1. SECRET & HASH GENERATION ---
         const secret_hex = uint8ArrayToHex(randomBytes(32));
-        const hash_btc_hex = sha256(secret_hex);
+        const hash_btc_buffer = bitcoin.crypto.sha256(Buffer.from(secret_hex.substring(2), 'hex'));
         const hashLock_evm = Sdk.HashLock.forSingleFill(secret_hex);
         console.log(`[SYSTEM] Generated Secret: ${secret_hex}`);
 
-        /* --- 2. RESOLVER LOCKS USDC ON 1INCH ---
+        // --- 2. RESOLVER (MAKER) CREATES AND SIGNS THE 1INCH ORDER ---
         console.log('[EVM] Resolver is creating 1inch order to sell USDC...');
         const order = Sdk.CrossChainOrder.new(
             new Sdk.Address(src.escrowFactory),
@@ -329,37 +323,43 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         );
         const signature = await resolver.signOrder(src.chainId, order);
         const resolverContract = new Resolver(src.resolver, '0x');
-        const { blockHash: srcDeployBlock } = await resolver.send(resolverContract.deploySrc(src.chainId, order, signature, Sdk.TakerTraits.default().setExtension(order.extension).setAmountMode(Sdk.AmountMode.maker), order.makingAmount));
+
+        // --- 3. USER (TAKER) SUBMITS THE TRANSACTION TO LOCK THE FUNDS ---
+        console.log('[EVM] User (Taker) is submitting the transaction to lock the Resolver funds...');
+        const { blockHash: srcDeployBlock } = await user.send(
+            resolverContract.deploySrc(
+                src.chainId,
+                order,
+                signature,
+                Sdk.TakerTraits.default().setExtension(order.extension).setAmountMode(Sdk.AmountMode.maker),
+                order.makingAmount
+            )
+        );
         const srcEscrowEvent = await srcFactory.getSrcDeployEvent(srcDeployBlock!);
         const srcEscrowAddress = new Sdk.EscrowFactory(new Sdk.Address(src.escrowFactory)).getSrcEscrowAddress(srcEscrowEvent[0], await srcFactory.getSourceImpl());
         console.log(`[EVM] Resolver's USDC is now locked in escrow: ${srcEscrowAddress}`);
         
-        // --- 3. USER VERIFIES AND LOCKS BTC (DESCRIPTOR-COMPATIBLE) ---
-        // Let the wallet generate addresses and manage keys internally.
+        // --- 4. USER VERIFIES AND LOCKS BTC ---
+        const balance = await btcClient.getBalance();
+        if (balance * 1e8 < btcAmountSats + 1000) throw new Error(`Insufficient BTC balance.`);
+        
         const userRefundAddress = await btcClient.getNewAddress("user_refund");
         const resolverClaimAddress = await btcClient.getNewAddress("resolver_claim");
-        
         const userInfo = await btcClient.getAddressInfo(userRefundAddress);
         const resolverInfo = await btcClient.getAddressInfo(resolverClaimAddress);
-
         const userPubkey = Buffer.from(userInfo.pubkey, 'hex');
         const resolverPubkey = Buffer.from(resolverInfo.pubkey, 'hex');
         
-        const balance = await btcClient.getBalance();
-        if (balance * 1e8 < btcAmountSats + 1000) {
-            throw new Error(`Insufficient BTC balance. Need at least ${btcAmountSats + 1000} sats. Please fund wallet from a Signet faucet.`);
-        }
-        
         const currentBlockHeight = await btcClient.getBlockCount();
         const lockTime = currentBlockHeight + 144;
-        const htlcScript = createHtlcScript(Buffer.from(hash_btc_hex.substring(2), 'hex'), resolverPubkey, userPubkey, lockTime);
+        const htlcScript = createHtlcScript(hash_btc_buffer, resolverPubkey, userPubkey, lockTime);
         const p2wsh = bitcoin.payments.p2wsh({ redeem: { output: htlcScript, network }, network });
         const htlcAddress = p2wsh.address!;
         
-        // Let Bitcoin Core create, fund, sign, and send the transaction. This is the most robust method.
         const lockTxId = await btcClient.sendToAddress(htlcAddress, btcAmountSats / 1e8);
         console.log(`[BTC] User's BTC lock transaction broadcasted: ${lockTxId}. Waiting for confirmation...`);
 
+        // Wait for confirmation on Signet
         let confirmations = 0;
         for (let i = 0; i < 90; i++) {
             try { confirmations = (await btcClient.getRawTransaction(lockTxId, true)).confirmations || 0; if (confirmations > 0) break; } catch (e) {}
@@ -367,7 +367,8 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         }
         expect(confirmations).toBeGreaterThan(0);
         console.log(`[BTC] Lock transaction confirmed.`);
-        /* --- 4. USER CLAIMS USDC & REVEALS SECRET ---
+
+        // --- 5. USER CLAIMS USDC & REVEALS SECRET ---
         console.log('[EVM] User is claiming the locked USDC...');
         await src.provider.send('evm_increaseTime', [11]);
         await src.provider.send('evm_mine', []);
@@ -376,7 +377,7 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         
         console.log('[SUCCESS] Atomic swap is complete. Secret has been revealed, allowing Resolver to claim BTC.');
     });
-    */
+    
 });
 
 // Helper Functions
