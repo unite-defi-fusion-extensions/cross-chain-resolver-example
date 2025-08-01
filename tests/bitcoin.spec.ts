@@ -131,7 +131,46 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         await user.topUpFromDonor(getAddress('0x0000000000000000000000000000000000000000'), getAddress('0x00000000219ab540356cBB839Cbe05303d7705Fa'), parseEther('10'));
 
         srcTimestamp = BigInt((await src.provider.getBlock('latest'))!.timestamp);
+        const requiredBalanceSats = btcAmountSats + 5000;
+        let balance = await btcClient.getBalance();
+        if (balance * 1e8 < requiredBalanceSats) {
+            const fundingAddress = await btcClient.getNewAddress("faucet_target");
+            await btcClient.generateToAddress(101, fundingAddress);
+            balance = await btcClient.getBalance();
+            console.log(`[BTC] Wallet funded. New balance: ${balance} BTC`);
+        } else {
+            console.log(`[BTC] Sufficient balance found (${balance} BTC).`);
+        }
+
+        secret = Buffer.from(randomBytes(32));
+        const hash = bitcoin.crypto.sha256(secret);
+        const userKeyPair = ECPair.makeRandom({ network });
+        console.log(`[SYSTEM] Generated Secret for this test: ${secret.toString('hex')}`);
+
+        const currentBlockHeight = await btcClient.getBlockCount();
+        const lockTime = currentBlockHeight + 10;
+        htlcScript = createSimpleHtlcScript(hash, userKeyPair.publicKey, lockTime);
+        const p2wsh = bitcoin.payments.p2wsh({ redeem: { output: htlcScript, network }, network });
+        const htlcAddress = p2wsh.address!;
+
+        const rawTx = await btcClient.createRawTransaction([], [{ [htlcAddress]: (btcAmountSats / 1e8).toFixed(8) }]);
+        const fundedTx = await btcClient.fundRawTransaction(rawTx);
+        const signedTx = await btcClient.signRawTransactionWithWallet(fundedTx.hex);
+        expect(signedTx.complete).toBe(true);
+        lockTxId = await btcClient.sendRawTransaction(signedTx.hex);
+        
+        await btcClient.generateToAddress(1, await btcClient.getNewAddress("mining_rewards"));
+        const isConfirmed = await waitForConfirmation(btcClient, lockTxId);
+        if (!isConfirmed) throw new Error("HTLC lock transaction did not confirm.");
+
+        const confirmedTx = await btcClient.getRawTransaction(lockTxId, true);
+        const htlcOutput = confirmedTx.vout.find(out => out.scriptPubKey.address === htlcAddress);
+        if (!htlcOutput) throw new Error("Could not find HTLC output in confirmed transaction.");
+        htlcVout = htlcOutput.n;
+        
+        console.log(`[SETUP COMPLETE] HTLC locked in tx ${lockTxId}:${htlcVout}`);
     });
+
 
     afterEach(async () => {
         if (src?.provider) src.provider.destroy();
@@ -151,15 +190,15 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
             console.log(`[BTC] Sufficient balance found (${balance} BTC).`);
         }
 
-        secret = Buffer.from(randomBytes(32));
+        const secret = Buffer.from(randomBytes(32));
         const hash = bitcoin.crypto.sha256(secret);
-        userKeyPair = ECPair.makeRandom({ network }); // Still needed for the refund path
+        const userKeyPair = ECPair.makeRandom({ network }); // Still needed for the refund path
         console.log(`[SYSTEM] Generated Secret: ${secret.toString('hex')}`);
 
         const currentBlockHeight = await btcClient.getBlockCount();
         const lockTime = currentBlockHeight + 10;
         // Use the simplified script which doesn't need a recipient key for the claim path
-        htlcScript = createSimpleHtlcScript(hash, userKeyPair.publicKey, lockTime);
+        const htlcScript = createSimpleHtlcScript(hash, userKeyPair.publicKey, lockTime);
         const p2wsh = bitcoin.payments.p2wsh({ redeem: { output: htlcScript, network }, network });
         const htlcAddress = p2wsh.address!;
 
@@ -167,7 +206,7 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         const fundedTx = await btcClient.fundRawTransaction(rawTx);
         const signedTx = await btcClient.signRawTransactionWithWallet(fundedTx.hex);
         expect(signedTx.complete).toBe(true);
-        lockTxId = await btcClient.sendRawTransaction(signedTx.hex);
+        const lockTxId = await btcClient.sendRawTransaction(signedTx.hex);
         console.log(`[BTC] HTLC lock transaction broadcasted: ${lockTxId}. Mining block to confirm...`);
         
         await btcClient.generateToAddress(1, await btcClient.getNewAddress("mining_rewards"));
@@ -177,7 +216,7 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         const confirmedTx = await btcClient.getRawTransaction(lockTxId, true);
         const htlcOutput = confirmedTx.vout.find(out => out.scriptPubKey.address === htlcAddress);
         if (!htlcOutput) throw new Error("Could not find HTLC output in confirmed transaction.");
-        htlcVout = htlcOutput.n;
+        const htlcVout = htlcOutput.n;
         
         console.log(`[BTC] Lock transaction confirmed. Funds are in HTLC at ${lockTxId}:${htlcVout}`);
         expect(lockTxId).toBeDefined();
@@ -218,6 +257,31 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         const receivedAmount = unspent.find(u => u.txid === claimTxId)?.amount || 0;
         expect(receivedAmount * 1e8).toEqual(btcAmountSats - fee);
         console.log(`[SUCCESS] Verified that ${resolverClaimAddress} received ${receivedAmount * 1e8} sats.`);
+    });
+    it('should FAIL to claim the funds with the wrong secret', async () => {
+        console.log(`[TEST 2] Attempting to claim with WRONG secret...`);
+        const resolverClaimAddress = await btcClient.getNewAddress("resolver_bad_claim");
+        const fee = 1000;
+
+        // Generate a DIFFERENT, wrong secret
+        const wrongSecret = Buffer.from(randomBytes(32));
+        console.log(`[SYSTEM] Using wrong secret: ${wrongSecret.toString('hex')}`);
+        
+        const tx = new bitcoin.Transaction();
+        tx.addInput(Buffer.from(lockTxId, 'hex').reverse(), htlcVout);
+        tx.addOutput(bitcoin.address.toOutputScript(resolverClaimAddress, network), btcAmountSats - fee);
+        
+        const witnessStack = [ wrongSecret, Buffer.from([1]), htlcScript ];
+        tx.setWitness(0, witnessStack);
+        
+        // We EXPECT this to fail.
+        await expect(
+            btcClient.sendRawTransaction(tx.toHex())
+        ).rejects.toThrow(
+            'mandatory-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack element)'
+        );
+        
+        console.log(`[SUCCESS] Transaction was correctly rejected by the node.`);
     });
     /*
     it('should swap User:BTC for Resolver:USDC', async () => {
