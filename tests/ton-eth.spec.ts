@@ -148,6 +148,19 @@ function createTonSwapDepositMessage(
 
 // Helper to create TON complete swap message
 function createTonCompleteSwapMessage(swapId: bigint, secret: Uint8Array) {
+
+
+    // TODO: FIX THIS IT SHOULD BE 
+
+    // await fluida.sendCompleteSwap(provider.sender(), {
+    //     swapId: targetSwapId,
+    //     preimage,
+    //     value: toNano('0.2'),
+    //   });
+    //   console.log("Complete swap transaction sent.");
+    // }
+
+
     return beginCell()
         .storeUint(OP_COMPLETE_SWAP, 32)
         .storeUint(0n, 64) // query_id
@@ -178,6 +191,7 @@ function createTonRefundSwapMessage(swapId: bigint) {
     // });
 
 
+    console.log("SWAP TO REFUND", swapId)
     return beginCell()
         .storeUint(OP_REFUND_SWAP, 32)
         .storeUint(0n, 64) // query_id
@@ -417,7 +431,7 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
 
         await resolverSender.send({
             to: tonSwapContract.address,
-            value: toNano('0.05'),
+            value: toNano('0.2'),
             body: completeMessage
         });
 
@@ -484,7 +498,7 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
 
         await userSender.send({
             to: tonSwapContract.address,
-            value: toNano('0.05'),
+            value: toNano('0.2'),
             body: refundMessage
         });
 
