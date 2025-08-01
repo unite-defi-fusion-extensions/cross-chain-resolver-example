@@ -5,7 +5,7 @@
   "scripts": {
     "test": "forge build && node --experimental-vm-modules ./node_modules/jest/bin/jest.js --setupFiles dotenv/config --",
     "lint": "eslint  \"tests/**/*.ts\"",
-    "test-ton" : "func-js contracts/ton/escrow.fc --boc build/escrow.cell && forge build && node --experimental-vm-modules ./node_modules/jest/bin/jest.js --setupFiles dotenv/config -- tests/ton.spec.ts"
+    "test-ton" : "func-js contracts/ton/escrow.fc --boc build/escrow.cell && forge build && node --experimental-vm-modules ./node_modules/jest/bin/jest.js --setupFiles dotenv/config --"
   },
   "devDependencies": {
     "@1inch/eslint-config": "^v3.0.7",

@@ -116,8 +116,8 @@ describe('Escrow Contract Interaction (Fusion+)', () => {
         const sender = walletContract.sender(keyPair.secretKey)
         await sender.send({to: userJettonWalletAddress, value: toNano('0.1'), body: transferMessage})
 
-        console.log('⏳ Waiting 30 seconds for the swap to be processed...')
-        await new Promise((resolve) => setTimeout(resolve, 30000))
+        console.log('⏳ Waiting 60 seconds for the swap to be processed...')
+        await new Promise((resolve) => setTimeout(resolve, 60000))
 
         const finalSwapCounter = await onchain.getSwapCounter()
         console.log(`[DEBUG] Final swap counter: ${finalSwapCounter}`)
