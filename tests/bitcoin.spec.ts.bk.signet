@@ -92,7 +92,7 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
     let srcFactory: EscrowFactory;
     let srcTimestamp: bigint;
     let btcClient: BitcoinCore;
-    const network = bitcoin.networks.regtest; 
+    const network = bitcoin.networks.testnet; // Signet uses testnet parameters
 
     let secret_hex: string;
     let hash_btc_hex: string;
@@ -129,60 +129,54 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         if (dst?.node) await dst.node.stop();
     });
     it('should create and fund a Bitcoin HTLC', async () => {
-        const requiredBalanceSats = btcAmountSats + 5000;
+        const requiredBalanceSats = btcAmountSats + 2000;
 
-        // --- 1. FUNDING (Regtest Faucet) ---
-        let balance = await btcClient.getBalance();
-        if (balance * 1e8 < requiredBalanceSats) {
-            console.log(`[BTC] Wallet balance low. Mining blocks to generate funds...`);
-            const fundingAddress = await btcClient.getNewAddress("faucet_target");
-            await btcClient.generateToAddress(101, fundingAddress);
-            balance = await btcClient.getBalance();
-            console.log(`[BTC] Wallet funded. New balance: ${balance} BTC`);
+        // --- 1. SMART FUNDING ---
+        const currentBalance = await btcClient.getBalance();
+        if (currentBalance * 1e8 < requiredBalanceSats) {
+            const fundingAddress = await btcClient.getNewAddress("funding_wallet");
+            console.log(`\n\n[ACTION REQUIRED] Wallet balance low. Please send >= ${requiredBalanceSats} sats to: ${fundingAddress}\n`);
+            console.log('Polling for funds...');
+            let isFunded = false;
+            for (let i = 0; i < 90; i++) {
+                const unspent = await btcClient.listUnspent(1, 9999999, [fundingAddress]);
+                const balanceSats = unspent.reduce((total, utxo) => total + Math.round(utxo.amount * 1e8), 0);
+                if (balanceSats >= requiredBalanceSats) {
+                    console.log(`Funds received! Balance: ${balanceSats} sats. Continuing test...`);
+                    isFunded = true;
+                    break;
+                }
+                await sleep(10000);
+            }
+            if (!isFunded) throw new Error(`Test timed out. Wallet was not funded.`);
         } else {
-            console.log(`[BTC] Sufficient balance found (${balance} BTC).`);
+            console.log(`[BTC] Sufficient balance found (${currentBalance} BTC). Skipping faucet step.`);
         }
 
         // --- 2. GENERATE KEYS AND SECRET ---
         secret_hex = uint8ArrayToHex(randomBytes(32));
         const hash_btc_hex = sha256(secret_hex);
-        const userKeyPair = ECPair.makeRandom({ network }); // For the refund path
-        resolverKeyPair = ECPair.makeRandom({ network }); // For the claim path
+        userKeyPair = ECPair.makeRandom({ network });
+        resolverKeyPair = ECPair.makeRandom({ network });
         console.log(`[SYSTEM] Generated Secret: ${secret_hex}`);
 
         // --- 3. CONSTRUCT AND BROADCAST THE HTLC LOCK TRANSACTION ---
-        const utxos = await btcClient.listUnspent(1);
-        const utxo = utxos.find(u => u.amount * 1e8 >= requiredBalanceSats);
-        if (!utxo) throw new Error("Could not find a spendable confirmed UTXO.");
-
         const currentBlockHeight = await btcClient.getBlockCount();
-        const lockTime = currentBlockHeight + 10;
+        const lockTime = currentBlockHeight + 144;
         htlcScript = createHtlcScript(Buffer.from(hash_btc_hex.substring(2), 'hex'), resolverKeyPair.publicKey, userKeyPair.publicKey, lockTime);
         p2wsh = bitcoin.payments.p2wsh({ redeem: { output: htlcScript, network }, network });
         const htlcAddress = p2wsh.address!;
+        console.log(`[SYSTEM] HTLC address: ${htlcAddress}`);
 
-        // --- 4. USE DESCRIPTOR-COMPATIBLE RPC WORKFLOW ---
-        console.log(`[BTC] Creating raw transaction to lock ${btcAmountSats} sats in HTLC: ${htlcAddress}`);
-        const rawTx = await btcClient.createRawTransaction(
-            [{ txid: utxo.txid, vout: utxo.vout }],
-            [{ [htlcAddress]: (btcAmountSats / 1e8).toFixed(8) }]
-        );
+        lockTxId = await btcClient.sendToAddress(htlcAddress, btcAmountSats / 1e8);
+        console.log(`[BTC] HTLC lock transaction broadcasted: ${lockTxId}. Waiting for confirmation...`);
 
-        console.log('[BTC] Funding transaction...');
-        const fundedTx = await btcClient.fundRawTransaction(rawTx);
-
-        console.log('[BTC] Signing transaction with wallet...');
-        const signedTx = await btcClient.signRawTransactionWithWallet(fundedTx.hex);
-        expect(signedTx.complete).toBe(true);
-        
-        lockTxId = await btcClient.sendRawTransaction(signedTx.hex);
-        console.log(`[BTC] HTLC lock transaction broadcasted: ${lockTxId}. Mining block to confirm...`);
-        
-        await btcClient.generateToAddress(1, await btcClient.getNewAddress("mining_rewards"));
-
+        // Use the robust polling function
         const isConfirmed = await waitForConfirmation(btcClient, lockTxId);
-        expect(isConfirmed).toBe(true);
-
+        if (!isConfirmed) {
+            throw new Error("HTLC lock transaction did not confirm in time.");
+        }
+        
         const confirmedTx = await btcClient.getRawTransaction(lockTxId, true);
         const htlcOutput = confirmedTx.vout.find(out => out.scriptPubKey.address === htlcAddress);
         if (!htlcOutput) throw new Error("Could not find HTLC output in confirmed transaction.");
@@ -193,7 +187,9 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
     });
 
     it('should claim the funds from the HTLC with the secret', async () => {
-        if (!lockTxId) throw new Error("Cannot run claim test: HTLC creation step did not complete.");
+        if (!lockTxId) {
+            throw new Error("Cannot run claim test: HTLC creation step did not complete successfully or was skipped.");
+        }
 
         console.log(`[BTC] Attempting to claim funds from HTLC ${lockTxId}:${htlcVout}`);
         const resolverClaimAddress = await btcClient.getNewAddress("resolver_final_destination");
@@ -208,37 +204,27 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         });
         psbt.addOutput({ address: resolverClaimAddress, value: btcAmountSats - fee });
 
-        // ======================= THE FINAL FIX =======================
-        // Sign the input, but explicitly disable the script check.
-        // This tells the library to trust us that the key is correct for our custom script.
-        psbt.signInput(0, resolverKeyPair, [bitcoin.Transaction.SIGHASH_ALL], { disableScriptCheck: true });
-        // ===============================================================
+        psbt.signInput(0, resolverKeyPair);
 
-        // Now that the signature is present in `partialSigs`, we can build the witness.
         const finalizer = (inputIndex: number, input: any) => {
             const script = bitcoin.script.compile([
                 input.partialSig[0].signature,
                 Buffer.from(secret_hex.substring(2), 'hex'),
-                bitcoin.opcodes.OP_TRUE,
+                Buffer.from([1]),
             ]);
-            return {
-                finalScriptWitness: bitcoin.script.witnessStackToScriptWitness([
-                    script,
-                    htlcScript
-                ])
-            };
+            return { finalScriptWitness: bitcoin.script.witnessStackToScriptWitness([script, htlcScript]) };
         };
         psbt.finalizeInput(0, finalizer);
 
         const claimTx = psbt.extractTransaction();
         const claimTxId = await btcClient.sendRawTransaction(claimTx.toHex());
-        console.log(`[BTC] Claim transaction broadcasted: ${claimTxId}. Mining block to confirm...`);
-        
-        await btcClient.generateToAddress(1, await btcClient.getNewAddress("mining_rewards"));
+        console.log(`[BTC] Claim transaction broadcasted: ${claimTxId}. Waiting for confirmation...`);
 
         const isClaimConfirmed = await waitForConfirmation(btcClient, claimTxId);
-        expect(isClaimConfirmed).toBe(true);
-        console.log(`[BTC] Claim transaction confirmed.`);
+        if (!isClaimConfirmed) {
+            throw new Error("Claim transaction did not confirm in time.");
+        }
+        console.log(`[BTC] Claim transaction confirmed. Funds have been moved.`);
         
         const unspent = await btcClient.listUnspent(1, 9999999, [resolverClaimAddress]);
         const receivedAmount = unspent.find(u => u.txid === claimTxId)?.amount || 0;
