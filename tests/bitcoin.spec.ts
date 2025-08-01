@@ -561,12 +561,11 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         const localUserKeyPair = ECPair.makeRandom({ network });
         const localResolverKeyPair = ECPair.makeRandom({ network });
     
-        // The user is the one who funds and can get a refund.
-        const userPubkey = localUserKeyPair.publicKey;
-        // The resolver is the one who can normally claim with the secret.
-        const resolverPubkey = localResolverKeyPair.publicKey;
+        // FIXED: Remove 'hex' parameter - publicKey is already a Buffer
+        const userPubkey = Buffer.from(localUserKeyPair.publicKey,'hex');
+        const resolverPubkey = Buffer.from(localResolverKeyPair.publicKey,'hex');
         
-        // Import the user's key into the wallet so we can fund the HTLC from it.
+        // FIXED: Remove Buffer.from() wrapper since userPubkey is already a Buffer
         const { address: userFundingAddress } = bitcoin.payments.p2pkh({ pubkey: Buffer.from(userPubkey), network });
         await btcClient.command('importdescriptors', [{
             desc: `pkh(${localUserKeyPair.toWIF()})`,
@@ -574,10 +573,10 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
             active: true,
             label: "htlc-funder"
         }]);
-        await btcClient.generateToAddress(101, userFundingAddress); // Mine coins for the funder
+        await btcClient.generateToAddress(101, userFundingAddress);
     
         const currentBlockHeight = await btcClient.getBlockCount();
-        const lockTime = currentBlockHeight + 10; // Set a specific, short timelock (10 blocks)
+        const lockTime = currentBlockHeight + 10;
     
         console.log(`[SYSTEM] HTLC will be refundable after block height: ${lockTime}`);
     
@@ -585,7 +584,7 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         const localP2wsh = bitcoin.payments.p2wsh({ redeem: { output: localHtlcScript, network }, network });
         const htlcAddress = localP2wsh.address!;
     
-        // Fund the HTLC from the node's wallet
+        // Fund the HTLC
         const fee = 1000;
         const rawTx = await btcClient.createRawTransaction([], [{ [htlcAddress]: (btcAmountSats / 1e8).toFixed(8) }]);
         const fundedTx = await btcClient.fundRawTransaction(rawTx);
@@ -605,7 +604,7 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         
         // --- 2. ADVANCE TIME: Mine blocks until the timelock expires ---
         const initialHeight = await btcClient.getBlockCount();
-        const blocksToMine = lockTime - initialHeight + 1; // Mine one more than needed to be safe
+        const blocksToMine = lockTime - initialHeight + 1;
         
         console.log(`[SYSTEM] Current height is ${initialHeight}. Mining ${blocksToMine} blocks to pass locktime ${lockTime}...`);
         await btcClient.generateToAddress(blocksToMine, await btcClient.getNewAddress("mining_rewards"));
@@ -616,40 +615,39 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
     
         // --- 3. CONSTRUCT & SEND REFUND TRANSACTION ---
         console.log('[BTC] Constructing the refund transaction...');
-        const refundAddress = userFundingAddress; // Refund back to the original funder
+        const refundAddress = userFundingAddress;
     
         const tx = new bitcoin.Transaction();
         tx.version = 2;
-        // CRITICAL: The transaction's locktime must be >= the script's locktime.
-        tx.locktime = lockTime; 
+        tx.locktime = lockTime;
         
-        // Add the HTLC UTXO as input. 
-        // The nSequence MUST be less than 0xffffffff for CLTV to be evaluated.
-        // bitcoinjs-lib's default is fine, but we set it explicitly for clarity.
         tx.addInput(Buffer.from(localLockTxId, 'hex').reverse(), localHtlcVout, 0xfffffffe);
         tx.addOutput(bitcoin.address.toOutputScript(refundAddress, network), btcAmountSats - fee);
     
-        // Create the signature hash for the refund transaction
+
+
+        
         const sighashType = bitcoin.Transaction.SIGHASH_ALL;
         const signatureHash = tx.hashForWitnessV0(
-            0, // input index
-            localHtlcScript, // the redeem script
-            btcAmountSats, // value of the input
+            0,
+            localHtlcScript,
+            btcAmountSats,
             sighashType
         );
     
-        // Sign the transaction with the FUNDER's key (user's key)
+        // Use the SAME pattern as your working code
         const rawSignature = localUserKeyPair.sign(signatureHash);
-
-        const encodedSignature = bitcoin.script.signature.encode(Buffer.from(rawSignature), sighashType);
+        const encodedSignature = bitcoin.script.signature.encode(
+            Buffer.from(rawSignature),
+            sighashType,
+        );
     
-        // Construct the witness for the REFUND path (the OP_ELSE branch)
+        // Construct witness for REFUND path using the same pattern as your working code
         const witnessStack = bitcoin.payments.p2wsh({
             redeem: {
                 input: bitcoin.script.compile([
                     encodedSignature,
-                    // Provide an empty buffer (OP_FALSE) to trigger the OP_ELSE path
-                    Buffer.from([]), 
+                    Buffer.from([]), // Empty buffer to trigger OP_ELSE path
                 ]),
                 output: localHtlcScript,
             },
@@ -667,31 +665,31 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         
         console.log(`[SUCCESS] Refund transaction confirmed.`);
     
-        // Optional but recommended: Verify the balance was received
+        // Verify the balance was received
         const unspent = await btcClient.listUnspent(1, 9999999, [refundAddress]);
         const receivedAmount = unspent.find(u => u.txid === refundTxId)?.amount || 0;
         expect(receivedAmount * 1e8).toEqual(btcAmountSats - fee);
         console.log(`[SUCCESS] Verified that ${refundAddress} received ${receivedAmount * 1e8} sats.`);
     });
+    
     it('should swap User:BTC for Resolver:USDC', async () => {
         const btcAmountSats = 20000;
-
+    
         // --- 1. SECRET & HASH GENERATION ---
-        const secret_hex = uint8ArrayToHex(randomBytes(32));
-        const hash_btc_buffer = bitcoin.crypto.sha256(Buffer.from(secret_hex.substring(2), 'hex'));
+        const s = randomBytes(32)
+        const secret_buffer = Buffer.from(s);
+        const hash_btc_buffer = bitcoin.crypto.sha256(secret_buffer);
+        const secret_hex = uint8ArrayToHex(s);
         const hashLock = Sdk.HashLock.forSingleFill(secret_hex);
-
+    
         console.log(`[SYSTEM] Generated Secret: ${secret_hex}`);
         
-        // Create the on-chain order using the keccak256-based hashLock.
         const usdcAmount = parseUnits('100', 6)
         const satsAmount = 10
-        // 1. Generate the secret in our test. This is the source of truth for the swap.
+    
         console.log(`[SYSTEM] Generated secret: ${secret_hex}`)
-
-
-
-        // 4. Create the on-chain order using the keccak256-based hashLock.
+    
+        // Create the on-chain order
         const order = Sdk.CrossChainOrder.new(
             new Sdk.Address(src.escrowFactory),
             {
@@ -729,10 +727,10 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
             },
             {nonce: Sdk.randBigInt(UINT_40_MAX), allowPartialFills: false, allowMultipleFills: false}
         )
-
+    
         const signature = await user.signOrder(src.chainId, order)
         const resolverContract = new Resolver(src.resolver, '0x')
-
+    
         const {blockHash: srcDeployBlock} = await resolver.send(
             resolverContract.deploySrc(
                 src.chainId,
@@ -749,44 +747,116 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         )
         expect(srcEscrowAddress).toBeDefined()
         console.log(`[EVM] Source Escrow deployed at ${srcEscrowAddress}`)
+        
         // --- 4. USER VERIFIES AND LOCKS BTC ---
-        const balance = await btcClient.getBalance();
-        if (balance * 1e8 < btcAmountSats + 1000) throw new Error(`Insufficient BTC balance.`);
+        const localUserKeyPair = ECPair.makeRandom({ network });
+        const localResolverKeyPair = ECPair.makeRandom({ network });
+    
+        // FIXED: Remove 'hex' parameter - publicKey is already a Buffer
+        const userPubkey = Buffer.from(localUserKeyPair.publicKey,'hex');
+        const resolverPubkey = Buffer.from(localResolverKeyPair.publicKey,'hex');
         
-        const userRefundAddress = await btcClient.getNewAddress("user_refund");
-        const resolverClaimAddress = await btcClient.getNewAddress("resolver_claim");
-        const userInfo = await btcClient.getAddressInfo(userRefundAddress);
-        const resolverInfo = await btcClient.getAddressInfo(resolverClaimAddress);
-        const userPubkey = Buffer.from(userInfo.pubkey, 'hex');
-        const resolverPubkey = Buffer.from(resolverInfo.pubkey, 'hex');
-        
+        // FIXED: Remove Buffer.from() wrapper
+        const { address: userFundingAddress } = bitcoin.payments.p2pkh({ pubkey: Buffer.from(userPubkey), network });
+        await btcClient.command('importdescriptors', [{
+            desc: `pkh(${localUserKeyPair.toWIF()})`,
+            timestamp: "now",
+            active: true,
+            label: "htlc-funder"
+        }]);
+        await btcClient.generateToAddress(101, userFundingAddress);
+    
         const currentBlockHeight = await btcClient.getBlockCount();
-        const lockTime = currentBlockHeight + 144;
-        const htlcScript = createHtlcScript(hash_btc_buffer,resolverPubkey, userPubkey, lockTime);
-        p2wsh = bitcoin.payments.p2wsh({ redeem: { output: htlcScript, network }, network });
-        const htlcAddress = p2wsh.address!;
+        const lockTime = currentBlockHeight + 10;
+        const htlcScript = createHtlcScript(hash_btc_buffer, resolverPubkey, userPubkey, lockTime);
         
+        // FIXED: Declare p2wsh properly in local scope
+        const p2wsh = bitcoin.payments.p2wsh({ redeem: { output: htlcScript, network }, network });
+        const htlcAddress = p2wsh.address!;
+    
+        console.log(`[DEBUG] Generated HTLC Address: ${htlcAddress}`);
         const lockTxId = await btcClient.sendToAddress(htlcAddress, btcAmountSats / 1e8);
         console.log(`[BTC] User's BTC lock transaction broadcasted: ${lockTxId}. Waiting for confirmation...`);
-
-
+    
         await btcClient.generateToAddress(1, await btcClient.getNewAddress("mining_rewards"));
         const isConfirmed = await waitForConfirmation(btcClient, lockTxId);
         expect(isConfirmed).toBe(true);
         console.log(`[BTC] Lock transaction confirmed.`);
-        // --- 2. RESOLVER (MAKER) CREATES AND SIGNS THE 1INCH ORDER ---
+    
+        // FIXED: Get the correct UTXO index
+        const confirmedTx = await btcClient.getRawTransaction(lockTxId, true);
+        const htlcOutput = confirmedTx.vout.find(out => out.scriptPubKey.address === htlcAddress);
+        if (!htlcOutput) throw new Error("Could not find HTLC output.");
+        const htlcVout = htlcOutput.n;
+    
         console.log('[EVM] Resolver is creating 1inch order to sell USDC...');
-
-        
-
-
+    
         // --- 5. USER CLAIMS USDC & REVEALS SECRET ---
         console.log('[EVM] User is claiming the locked USDC...');
         await src.provider.send('evm_increaseTime', [11]);
         await src.provider.send('evm_mine', []);
         await user.send(resolverContract.withdraw('src', srcEscrowAddress, secret_hex, srcEscrowEvent[0]));
-
+    
         console.log('[SUCCESS] Atomic swap is complete. Secret has been revealed, allowing Resolver to claim BTC.');
+        
+        // --- 6. Resolver claim HTLC ---
+        // FIXED: Remove Buffer.from() wrapper
+        const { address: resolverClaimAddress } = bitcoin.payments.p2pkh({ pubkey: Buffer.from(resolverPubkey), network });
+        await btcClient.command('importdescriptors', [{
+            desc: `pkh(${localResolverKeyPair.toWIF()})`, // FIXED: Use localResolverKeyPair instead of resolverKeyPair
+            timestamp: "now",
+            active: true,
+            label: "htlc-resolver"
+        }]);
+        await btcClient.generateToAddress(101, resolverClaimAddress);
+        
+        const fee = 1000;
+        const tx = new bitcoin.Transaction();
+        tx.version = 2;
+
+        // 2. Add the HTLC UTXO as the input.
+        tx.addInput(Buffer.from(lockTxId, 'hex').reverse(), htlcVout);
+        tx.addOutput(bitcoin.address.toOutputScript(resolverClaimAddress, network), btcAmountSats - fee);
+
+        // 3. Get the sighash for the input we want to spend from this specific transaction object.
+        const sighashType = bitcoin.Transaction.SIGHASH_ALL;
+        const signatureHash = tx.hashForWitnessV0(
+            0, // input index
+            htlcScript, // the redeem script
+            btcAmountSats, // value of the input being spent
+            sighashType,
+        );
+
+        // 4. Create the signature with the correct keypair and encode it.
+        const rawSignature = localResolverKeyPair.sign(signatureHash);
+        const encodedSignature = bitcoin.script.signature.encode(
+            Buffer.from(rawSignature),
+            sighashType,
+        );
+
+        // 5. Construct the final witness stack for the "claim" path.
+        const witnessStack = bitcoin.payments.p2wsh({
+            redeem: {
+                input: bitcoin.script.compile([
+                    encodedSignature,
+                    secret_buffer, // The wrong secret
+                    bitcoin.opcodes.OP_TRUE,
+                ]),
+                output: htlcScript,
+            },
+        }).witness;
+
+        // 6. Set the witness directly on the transaction's input.
+        tx.setWitness(0, witnessStack!);
+    
+        const claimTxId = await btcClient.sendRawTransaction(tx.toHex());
+        console.log(`[BTC] Claim transaction broadcasted: ${claimTxId}. Mining block to confirm...`);
+        
+        await btcClient.generateToAddress(1, await btcClient.getNewAddress("mining_rewards"));
+    
+        const isClaimConfirmed = await waitForConfirmation(btcClient, claimTxId);
+        expect(isClaimConfirmed).toBe(true);
+        console.log(`[BTC] Claim transaction confirmed.`);
     });
 
     
