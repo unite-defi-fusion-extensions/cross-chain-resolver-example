@@ -1,11 +1,9 @@
-// tests/ton-eth-bridge-fixed.spec.ts
 /* eslint-disable */
-
 import 'dotenv/config';
 import { expect, jest, beforeAll, afterAll, describe, it } from '@jest/globals';
 import * as fs from 'fs';
 import assert from 'node:assert';
-import crypto from 'crypto'; // <-- added
+import crypto from 'crypto';
 
 // Ethereum Imports
 import { createServer, CreateServerReturnType } from 'prool';
@@ -16,12 +14,12 @@ import {
   Wallet as SignerWallet,
   computeAddress,
   randomBytes as ethRandomBytes,
-  keccak256,
   parseUnits,
-  parseEther,
+  Contract,
 } from 'ethers';
-import factoryContract from '../dist/contracts/TestEscrowFactory.sol/TestEscrowFactory.json';
-import resolverContract from '../dist/contracts/Resolver.sol/Resolver.json';
+
+// Artifacts
+import hashedTimelockERC20 from '../dist/contracts/HashedTimelockERC20.sol/HashedTimelockERC20.json';
 
 // Helper classes
 import { ChainConfig, config } from './config';
@@ -63,6 +61,13 @@ const OP_REFUND_SWAP = 0xabcdef12;
 const OP_DEPOSIT_NOTIFICATION = 0xdeadbeef;
 const OP_INITIALIZE = 1;
 
+// Minimal ERC20 ABI for approvals/balances
+const ERC20_ABI = [
+  'function approve(address spender, uint256 amount) external returns (bool)',
+  'function balanceOf(address) view returns (uint256)',
+  'function decimals() view returns (uint8)',
+];
+
 // -----------------------------------------------------------------------------
 // EVM helpers
 // -----------------------------------------------------------------------------
@@ -98,30 +103,14 @@ async function getProvider(
 async function initChain(cnf: ChainConfig): Promise<{
   node: CreateServerReturnType;
   provider: JsonRpcProvider;
-  escrowFactory: string;
+  escrowFactory: string; // kept for type compatibility
   resolver: string;
 }> {
   const { node, provider } = await getProvider(cnf);
-  const deployer = new SignerWallet(cnf.ownerPrivateKey, provider);
 
-  const escrowFactory = await deploy(
-    factoryContract,
-    [
-      cnf.limitOrderProtocol,
-      cnf.wrappedNative,
-      '0x0000000000000000000000000000000000000000',
-      deployer.address,
-      60 * 30,
-      60 * 30,
-    ],
-    deployer
-  );
-
-  const resolver = await deploy(
-    resolverContract,
-    [escrowFactory, cnf.limitOrderProtocol, computeAddress(resolverPk)],
-    deployer
-  );
+  // Use EOAs, no resolver contract needed for this test.
+  const resolver = computeAddress(resolverPk);
+  const escrowFactory = '0x0000000000000000000000000000000000000000';
 
   return { node, provider, resolver, escrowFactory };
 }
@@ -151,7 +140,6 @@ async function checkJettonBalance(
   }
 }
 
-// Safe getter wrapper
 async function safeContractCall<T>(
   fn: () => Promise<T>,
   name: string,
@@ -204,7 +192,7 @@ function createTonSwapDepositMessage(
 function createTonCompleteSwapMessage(swapId: bigint, secret: Uint8Array) {
   return beginCell()
     .storeUint(OP_COMPLETE_SWAP, 32)
-    .storeUint(swapId, 256) // contract expects 256 for swap id in your FunC
+    .storeUint(swapId, 256)
     .storeUint(BigInt('0x' + Buffer.from(secret).toString('hex')), 256)
     .endCell();
 }
@@ -235,6 +223,13 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed, fresh deploy + init each ru
   };
   let ethUser: Wallet;
 
+  // Signers & contracts (EVM)
+  let userSigner: SignerWallet;
+  let resolverSigner: SignerWallet;
+  let htlcAddress: string;
+  let htlc: Contract;
+  let usdc: Contract;
+
   // TON
   let tonClient: TonClient;
   let tonUserWallet: WalletContractV4;
@@ -256,10 +251,28 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed, fresh deploy + init each ru
     console.log('[1/5] 🔗 Ethereum fork…');
     ethChain = await initChain(config.chain.source);
     ethUser = new Wallet(userPk, ethChain.provider);
+
+    // EOAs for ETH side
+    userSigner = new SignerWallet(userPk, ethChain.provider);
+    resolverSigner = new SignerWallet(resolverPk, ethChain.provider);
+
     const resolverWalletEvm = await Wallet.fromAddress(
       ethChain.resolver,
       ethChain.provider
     );
+
+    // Deploy HashedTimelockERC20
+    htlcAddress = await deploy(hashedTimelockERC20, [], userSigner);
+    htlc = new Contract(htlcAddress, hashedTimelockERC20.abi, ethChain.provider);
+
+    // USDC (or ERC20) on the fork
+    usdc = new Contract(
+      config.chain.source.tokens.USDC.address,
+      ERC20_ABI,
+      ethChain.provider
+    );
+
+    // Fund user & resolver with ERC20 from donor
     await ethUser.topUpFromDonor(
       config.chain.source.tokens.USDC.address,
       config.chain.source.tokens.USDC.donor,
@@ -270,7 +283,7 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed, fresh deploy + init each ru
       config.chain.source.tokens.USDC.donor,
       parseUnits('150', 6)
     );
-    console.log('✅ Ethereum ready');
+    console.log(`✅ Ethereum ready (HTLC: ${htlcAddress})`);
 
     // ---------------- TON bootstrap ----------------
     console.log('[2/5] 🔗 TON testnet…');
@@ -308,19 +321,17 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed, fresh deploy + init each ru
     console.log(`✅ User jWallet:        ${userJettonWallet.toString()}`);
     console.log(`✅ Resolver jWallet:    ${resolverJettonWallet.toString()}`);
 
-    // ---------------- Fresh contract every run ----------------
+    // ---------------- Fresh TON contract every run ----------------
     console.log('[3/5] 📦 Load code & build fresh StateInit with random salt…');
     if (!fs.existsSync('build/escrow.cell')) {
       throw new Error('build/escrow.cell not found');
     }
     const escrowCode = Cell.fromBoc(fs.readFileSync('build/escrow.cell'))[0];
 
-    // **RANDOM SALT**: use a random placeholder jetton wallet in init data to change StateInit
-    const randHex = Buffer.from(ethRandomBytes(32)).toString('hex'); // 32 bytes
+    const randHex = Buffer.from(ethRandomBytes(32)).toString('hex');
     const randomPlaceholderJetton = TonAddress.parse(`0:${randHex}`);
 
     const initConfig: TonSwapConfig = {
-      // Placeholder; contract will overwrite via OP_INITIALIZE
       jettonWallet: randomPlaceholderJetton,
       swapCounter: 0n,
       swaps: Dictionary.empty(),
@@ -336,8 +347,8 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed, fresh deploy + init each ru
     console.log('[4/5] 🚀 Deploy fresh instance…');
     const sender = tonUserWallet.sender(tonUserKeyPair.secretKey);
     try {
-      await onchainSwap.getSwapCounter(); // if this works, already deployed (unlikely)
-      console.log('ℹ️ Already deployed (unexpected in CI), continuing…');
+      await onchainSwap.getSwapCounter();
+      console.log('ℹ️ Already deployed (unlikely), continuing…');
     } catch {
       await onchainSwap.sendDeploy(sender, toNano('0.1'));
       await waitForTonTransaction(tonClient, 20000);
@@ -366,7 +377,6 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed, fresh deploy + init each ru
     await waitForTonTransaction(tonClient, 20000);
     console.log('✅ Initialization sent/applied');
 
-    // Optional: show randomized ctx_id if wrapper exposes it as getId() or get_id()
     const id1 = await safeContractCall(
       // @ts-expect-error dynamic
       () => (onchainSwap as any).getId?.() ?? (onchainSwap as any).get_id?.(),
@@ -378,22 +388,28 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed, fresh deploy + init each ru
 
   afterAll(async () => {
     await ethChain.node.stop();
-    setTimeout(() => process.exit(0), 1000);
+    // setTimeout(() => process.exit(0), 1000);
   });
 
-  it('creates a TON swap (fresh contract address each run)', async () => {
+  it('creates a TON swap (fresh contract address each run) and deploys EVM HashlockTime', async () => {
     console.log('\n🔄 Create swap on fresh instance…');
+
+    // ---------- Shared secret/hash ----------
     const secret = ethRandomBytes(32);
-    const hashLockBigInt = tonHashLockFromSecret(secret); // <-- only change
+    const hashLockBigInt = tonHashLockFromSecret(secret); // SHA-256(secret)
+    const hashlockBytes32 =
+      '0x' + hashLockBigInt.toString(16).padStart(64, '0');
+
     const currentTime = Math.floor(Date.now() / 1000);
     const timeLock = BigInt(currentTime + 3600);
-    const swapAmount = 1n;
+    const swapAmountJetton = 1n;
 
+    // ---------- TON deposit (already in your code) ----------
     const onchainTonSwap = tonClient.open(tonSwapContract);
     const before = await onchainTonSwap.getSwapCounter();
 
     const depositMessage = createTonSwapDepositMessage(
-      swapAmount,
+      swapAmountJetton,
       tonUserWallet.address,
       tonResolverWallet.address,
       hashLockBigInt,
@@ -401,8 +417,7 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed, fresh deploy + init each ru
       tonSwapContract.address
     );
 
-    const userSender = tonUserWallet.sender(tonUserKeyPair.secretKey);
-    await userSender.send({
+    await tonUserWallet.sender(tonUserKeyPair.secretKey).send({
       to: userJettonWallet,
       value: toNano('0.1'),
       body: depositMessage,
@@ -411,24 +426,61 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed, fresh deploy + init each ru
 
     const after = await onchainTonSwap.getSwapCounter();
 
-    console.log(`📍 Contract address used: ${tonSwapContract.address.toString()}`);
-    console.log(`📊 Counter before=${before}, after=${after}`);
+    console.log(`📍 TON Contract: ${tonSwapContract.address.toString()}`);
+    console.log(`📊 TON Counter before=${before}, after=${after}`);
     expect(after).toBeGreaterThan(before);
+
+    // ---------- EVM side: approve + create HTLC ----------
+    const amountUsdc = parseUnits('1', 6);
+    const usdcUser = usdc.connect(userSigner);
+    const htlcUser = htlc.connect(userSigner);
+
+    await (await usdcUser.approve(htlcAddress, amountUsdc)).wait();
+
+    // Predict contractId via static call, then execute
+    const contractId = await htlcUser.newContract.staticCall(
+      resolverSigner.address,
+      hashlockBytes32,
+      Number(timeLock),
+      usdc.target as string,
+      amountUsdc
+    );
+    const tx = await htlcUser.newContract(
+      resolverSigner.address,
+      hashlockBytes32,
+      Number(timeLock),
+      usdc.target as string,
+      amountUsdc
+    );
+    await tx.wait();
+
+    console.log(`✅ EVM HTLC created, id=${contractId}`);
+    // Optional balance sanity check
+    const htlcBal = await usdc.balanceOf(htlcAddress);
+
+    console.log("htlcBal", htlcBal)
+    expect(htlcBal).toBeGreaterThanOrEqual(amountUsdc);
   });
 
-  it('completes a swap path (uses OP_COMPLETE_SWAP)', async () => {
+  it('completes a swap path (uses OP_COMPLETE_SWAP) and withdraws on EVM', async () => {
     console.log('\n🔓 Complete path…');
+
+    // ---------- Shared secret/hash ----------
     const secret = ethRandomBytes(32);
-    const hashLockBigInt = tonHashLockFromSecret(secret); // <-- only change
+    const hashLockBigInt = tonHashLockFromSecret(secret);
+    const hashlockBytes32 =
+      '0x' + hashLockBigInt.toString(16).padStart(64, '0');
+
     const tnow = Math.floor(Date.now() / 1000);
     const timeLock = BigInt(tnow + 3600);
-    const amount = 1n;
+    const amountJetton = 1n;
 
+    // ---------- TON deposit ----------
     const onchain = tonClient.open(tonSwapContract);
     const before = await onchain.getSwapCounter();
 
     const dep = createTonSwapDepositMessage(
-      amount,
+      amountJetton,
       tonUserWallet.address,
       tonResolverWallet.address,
       hashLockBigInt,
@@ -445,6 +497,38 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed, fresh deploy + init each ru
     const after = await onchain.getSwapCounter();
     const swapId = after - 1n;
 
+    // ---------- EVM: approve + create HTLC with same hash/timelock ----------
+    const amountUsdc = parseUnits('2', 6);
+    const usdcUser = usdc.connect(userSigner);
+    await (await usdcUser.approve(htlcAddress, amountUsdc)).wait();
+
+    const htlcUser = htlc.connect(userSigner);
+    const contractId = await htlcUser.newContract.staticCall(
+      resolverSigner.address,
+      hashlockBytes32,
+      Number(timeLock),
+      usdc.target as string,
+      amountUsdc
+    );
+    await (await htlcUser.newContract(
+      resolverSigner.address,
+      hashlockBytes32,
+      Number(timeLock),
+      usdc.target as string,
+      amountUsdc
+    )).wait();
+
+    // ---------- EVM withdraw by resolver with preimage ----------
+    const preimage = ('0x' + Buffer.from(secret).toString('hex')) as `0x${string}`;
+    const resolverUsdcBefore = await usdc.balanceOf(resolverSigner.address);
+
+    const htlcResolver = htlc.connect(resolverSigner);
+    await (await htlcResolver.withdraw(contractId, preimage)).wait();
+
+    const resolverUsdcAfter = await usdc.balanceOf(resolverSigner.address);
+    expect(resolverUsdcAfter - resolverUsdcBefore).toBeGreaterThanOrEqual(amountUsdc);
+
+    // ---------- TON completion ----------
     const complete = createTonCompleteSwapMessage(swapId, secret);
     await tonResolverWallet.sender(tonResolverKeyPair.secretKey).send({
       to: tonSwapContract.address,
@@ -457,22 +541,26 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed, fresh deploy + init each ru
     expect(after).toBeGreaterThan(before);
   });
 
-  it('refunds on expired timelock (uses OP_REFUND_SWAP)', async () => {
+  it('refunds on expired timelock (uses OP_REFUND_SWAP) and refund on EVM', async () => {
     console.log('\n🛡️ Refund path…');
+
+    // ---------- Shared secret/hash ----------
     const secret = ethRandomBytes(32);
-    const hashLockBigInt = tonHashLockFromSecret(secret); // <-- only change
-    const tnow = Math.floor(Date.now() / 1000);
-    const timeLock = 1; // already expired
-    const amount = 1n;
+    const hashLockBigInt = tonHashLockFromSecret(secret);
+    const hashlockBytes32 =
+      '0x' + hashLockBigInt.toString(16).padStart(64, '0');
+
+    // TON uses already expired for its path; we keep as-is
+    const timeLockTon = 1;
+    const amountJetton = 1n;
 
     const onchain = tonClient.open(tonSwapContract);
-
     const dep = createTonSwapDepositMessage(
-      amount,
+      amountJetton,
       tonUserWallet.address,
       tonResolverWallet.address,
       hashLockBigInt,
-      timeLock,
+      BigInt(timeLockTon),
       tonSwapContract.address
     );
     await tonUserWallet.sender(tonUserKeyPair.secretKey).send({
@@ -485,6 +573,41 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed, fresh deploy + init each ru
     const counter = await onchain.getSwapCounter();
     const swapId = counter - 1n;
 
+    // ---------- EVM: create HTLC with short future timelock, then advance time ----------
+    const now = Math.floor(Date.now() / 1000);
+    const shortTimelock = now + 120; // 2 minutes
+    const amountUsdc = parseUnits('3', 6);
+
+    const usdcUser = usdc.connect(userSigner);
+    await (await usdcUser.approve(htlcAddress, amountUsdc)).wait();
+
+    const htlcUser = htlc.connect(userSigner);
+    const contractId = await htlcUser.newContract.staticCall(
+      resolverSigner.address,
+      hashlockBytes32,
+      shortTimelock,
+      usdc.target as string,
+      amountUsdc
+    );
+    await (await htlcUser.newContract(
+      resolverSigner.address,
+      hashlockBytes32,
+      shortTimelock,
+      usdc.target as string,
+      amountUsdc
+    )).wait();
+
+    // Fast-forward time and mine
+    await ethChain.provider.send('evm_increaseTime', [300]); // > 120s
+    await ethChain.provider.send('evm_mine', []);
+
+    // Refund from sender (user)
+    const userUsdcBefore = await usdc.balanceOf(userSigner.address);
+    await (await htlcUser.refund(contractId)).wait();
+    const userUsdcAfter = await usdc.balanceOf(userSigner.address);
+    expect(userUsdcAfter - userUsdcBefore).toBeGreaterThanOrEqual(amountUsdc);
+
+    // ---------- TON refund ----------
     const refund = createTonRefundSwapMessage(swapId);
     await tonUserWallet.sender(tonUserKeyPair.secretKey).send({
       to: tonSwapContract.address,
