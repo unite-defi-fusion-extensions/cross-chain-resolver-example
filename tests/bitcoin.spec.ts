@@ -311,34 +311,6 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         const hash_btc_buffer = bitcoin.crypto.sha256(Buffer.from(secret_hex.substring(2), 'hex'));
         const hashLock_evm = Sdk.HashLock.forSingleFill(secret_hex);
         console.log(`[SYSTEM] Generated Secret: ${secret_hex}`);
-
-        // --- 2. RESOLVER (MAKER) CREATES AND SIGNS THE 1INCH ORDER ---
-        console.log('[EVM] Resolver is creating 1inch order to sell USDC...');
-        const order = Sdk.CrossChainOrder.new(
-            new Sdk.Address(src.escrowFactory),
-            { maker: new Sdk.Address(await resolver.getAddress()), makingAmount: usdcAmount, takingAmount: BigInt(btcAmountSats), makerAsset: new Sdk.Address(config.chain.source.tokens.USDC.address), takerAsset: new Sdk.Address(BTC_DUMMY_ASSET) },
-            { hashLock: hashLock_evm, timeLocks: Sdk.TimeLocks.new({ srcWithdrawal: 10n, srcPublicWithdrawal: 7200n, srcCancellation: 7201n, srcPublicCancellation: 7202n, dstWithdrawal: 10n, dstPublicWithdrawal: 3600n, dstCancellation: 3601n, }), srcChainId: src.chainId, dstChainId: Sdk.NetworkEnum.BINANCE, srcSafetyDeposit: parseEther('0.01'), dstSafetyDeposit: 0n },
-            { auction: new Sdk.AuctionDetails({ startTime: srcTimestamp, duration: 120n, initialRateBump: 0, points: [] }), whitelist: [{ address: new Sdk.Address(await user.getAddress()), allowFrom: 0n }], resolvingStartTime: 0n },
-            { nonce: Sdk.randBigInt(UINT_40_MAX), allowPartialFills: false, allowMultipleFills: false }
-        );
-        const signature = await resolver.signOrder(src.chainId, order);
-        const resolverContract = new Resolver(src.resolver, '0x');
-
-        // --- 3. USER (TAKER) SUBMITS THE TRANSACTION TO LOCK THE FUNDS ---
-        console.log('[EVM] User (Taker) is submitting the transaction to lock the Resolver funds...');
-        const { blockHash: srcDeployBlock } = await user.send(
-            resolverContract.deploySrc(
-                src.chainId,
-                order,
-                signature,
-                Sdk.TakerTraits.default().setExtension(order.extension).setAmountMode(Sdk.AmountMode.maker),
-                order.makingAmount
-            )
-        );
-        const srcEscrowEvent = await srcFactory.getSrcDeployEvent(srcDeployBlock!);
-        const srcEscrowAddress = new Sdk.EscrowFactory(new Sdk.Address(src.escrowFactory)).getSrcEscrowAddress(srcEscrowEvent[0], await srcFactory.getSourceImpl());
-        console.log(`[EVM] Resolver's USDC is now locked in escrow: ${srcEscrowAddress}`);
-        
         // --- 4. USER VERIFIES AND LOCKS BTC ---
         const balance = await btcClient.getBalance();
         if (balance * 1e8 < btcAmountSats + 1000) throw new Error(`Insufficient BTC balance.`);
@@ -352,21 +324,79 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         
         const currentBlockHeight = await btcClient.getBlockCount();
         const lockTime = currentBlockHeight + 144;
-        const htlcScript = createHtlcScript(hash_btc_buffer, resolverPubkey, userPubkey, lockTime);
+        const htlcScript = createSimpleHtlcScript(hash_btc_buffer, userPubkey, lockTime);
         const p2wsh = bitcoin.payments.p2wsh({ redeem: { output: htlcScript, network }, network });
         const htlcAddress = p2wsh.address!;
         
         const lockTxId = await btcClient.sendToAddress(htlcAddress, btcAmountSats / 1e8);
         console.log(`[BTC] User's BTC lock transaction broadcasted: ${lockTxId}. Waiting for confirmation...`);
 
-        // Wait for confirmation on Signet
-        let confirmations = 0;
-        for (let i = 0; i < 90; i++) {
-            try { confirmations = (await btcClient.getRawTransaction(lockTxId, true)).confirmations || 0; if (confirmations > 0) break; } catch (e) {}
-            await sleep(10000);
-        }
-        expect(confirmations).toBeGreaterThan(0);
+
+        await btcClient.generateToAddress(1, await btcClient.getNewAddress("mining_rewards"));
+        const isConfirmed = await waitForConfirmation(btcClient, lockTxId);
+        expect(isConfirmed).toBe(true);
         console.log(`[BTC] Lock transaction confirmed.`);
+        // --- 2. RESOLVER (MAKER) CREATES AND SIGNS THE 1INCH ORDER ---
+        console.log('[EVM] Resolver is creating 1inch order to sell USDC...');
+        // 4. Create the on-chain order using the keccak256-based hashLock.
+        const order = Sdk.CrossChainOrder.new(
+            new Sdk.Address(src.escrowFactory),
+            {
+                maker: new Sdk.Address(await user.getAddress()),
+                makingAmount: usdcAmount,
+                takingAmount: BigInt(btcAmountSats),
+                makerAsset: new Sdk.Address(config.chain.source.tokens.USDC.address),
+                takerAsset: new Sdk.Address(BTC_SAT_ASSET)
+            },
+            {
+                hashLock: hashLock_evm,
+                timeLocks: Sdk.TimeLocks.new({
+                    srcWithdrawal: 10n,
+                    srcPublicWithdrawal: 7200n,
+                    srcCancellation: 7201n,
+                    srcPublicCancellation: 7202n,
+                    dstWithdrawal: 10n,
+                    dstPublicWithdrawal: 3600n,
+                    dstCancellation: 3601n
+                }),
+                srcChainId: src.chainId,
+                dstChainId: Sdk.NetworkEnum.BINANCE,
+                srcSafetyDeposit: parseEther('0.01'),
+                dstSafetyDeposit: 0n
+            },
+            {
+                auction: new Sdk.AuctionDetails({
+                    startTime: srcTimestamp,
+                    duration: 120n,
+                    initialRateBump: 0,
+                    points: []
+                }),
+                whitelist: [{address: new Sdk.Address(src.resolver), allowFrom: 0n}],
+                resolvingStartTime: 0n
+            },
+            {nonce: Sdk.randBigInt(UINT_40_MAX), allowPartialFills: false, allowMultipleFills: false}
+        )
+
+        const signature = await user.signOrder(src.chainId, order)
+        const resolverContract = new Resolver(src.resolver, '0x')
+
+        const {blockHash: srcDeployBlock} = await resolver.send(
+            resolverContract.deploySrc(
+                src.chainId,
+                order,
+                signature,
+                Sdk.TakerTraits.default().setExtension(order.extension).setAmountMode(Sdk.AmountMode.maker),
+                order.makingAmount
+            )
+        )
+        const srcEscrowEvent = await srcFactory.getSrcDeployEvent(srcDeployBlock!)
+        const srcEscrowAddress = new Sdk.EscrowFactory(new Sdk.Address(src.escrowFactory)).getSrcEscrowAddress(
+            srcEscrowEvent[0],
+            await srcFactory.getSourceImpl()
+        )
+        console.log(`[EVM] Source Escrow deployed at ${srcEscrowAddress}`)
+        
+
 
         // --- 5. USER CLAIMS USDC & REVEALS SECRET ---
         console.log('[EVM] User is claiming the locked USDC...');
