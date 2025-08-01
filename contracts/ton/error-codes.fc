@@ -17,6 +17,7 @@ const ERR_INVALID_OPERATION               = 65535;  ;; hex: 0xffff
 const ERR_SWAP_NOT_FOUND                  = 65520;  ;; hex: 0xfff0
 const ERR_ALREADY_INITIALIZED             = 65519;  ;; hex: 0xffef
 const ERR_INVALID_JETTON                  = 65524;  ;; hex: 0xfff4
+const  ERR_NOT_INITIALIZED = 110;
 
 ;; Error Codes for Specific Checks
 const ERR_INVALID_OP                      = 401;    ;; hex: 0x191
