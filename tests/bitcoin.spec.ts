@@ -675,76 +675,80 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
     });
     it('should swap User:BTC for Resolver:USDC', async () => {
         const btcAmountSats = 20000;
-        const usdcAmount = parseUnits('10', 6);
-        let resultBalances = await getBalances(
-            config.chain.source.tokens.USDC.address,
-            config.chain.destination.tokens.USDC.address
-        )
-        console.log(resultBalances)
+
         // --- 1. SECRET & HASH GENERATION ---
         const secret_hex = uint8ArrayToHex(randomBytes(32));
         const hash_btc_buffer = bitcoin.crypto.sha256(Buffer.from(secret_hex.substring(2), 'hex'));
-        const hashLock_evm = Sdk.HashLock.forSingleFill(secret_hex);
+        const hashLock = Sdk.HashLock.forSingleFill(secret_hex);
 
         console.log(`[SYSTEM] Generated Secret: ${secret_hex}`);
         
-                // 4. Create the on-chain order using the keccak256-based hashLock.
-                const order = Sdk.CrossChainOrder.new(
-                    new Sdk.Address(src.escrowFactory),
-                    {
-                        maker: new Sdk.Address(await user.getAddress()),
-                        makingAmount: usdcAmount,
-                        takingAmount: BigInt(btcAmountSats),
-                        makerAsset: new Sdk.Address(config.chain.source.tokens.USDC.address),
-                        takerAsset: new Sdk.Address(BTC_SAT_ASSET)
-                    },
-                    {
-                        hashLock: hashLock_evm,
-                        timeLocks: Sdk.TimeLocks.new({
-                            srcWithdrawal: 10n,
-                            srcPublicWithdrawal: 7200n,
-                            srcCancellation: 7201n,
-                            srcPublicCancellation: 7202n,
-                            dstWithdrawal: 10n,
-                            dstPublicWithdrawal: 3600n,
-                            dstCancellation: 3601n
-                        }),
-                        srcChainId: src.chainId,
-                        dstChainId: Sdk.NetworkEnum.BINANCE,
-                        srcSafetyDeposit: parseEther('0.01'),
-                        dstSafetyDeposit: 0n
-                    },
-                    {
-                        auction: new Sdk.AuctionDetails({
-                            startTime: srcTimestamp,
-                            duration: 120n,
-                            initialRateBump: 0,
-                            points: []
-                        }),
-                        whitelist: [{address: new Sdk.Address(src.resolver), allowFrom: 0n}],
-                        resolvingStartTime: 0n
-                    },
-                    {nonce: Sdk.randBigInt(UINT_40_MAX), allowPartialFills: false, allowMultipleFills: false}
-                )
-        
-                const signature = await user.signOrder(src.chainId, order)
-                const resolverContract = new Resolver(src.resolver, '0x')
-        
-                const {blockHash: srcDeployBlock} = await resolver.send(
-                    resolverContract.deploySrc(
-                        src.chainId,
-                        order,
-                        signature,
-                        Sdk.TakerTraits.default().setExtension(order.extension).setAmountMode(Sdk.AmountMode.maker),
-                        order.makingAmount
-                    )
-                )
-                const srcEscrowEvent = await srcFactory.getSrcDeployEvent(srcDeployBlock!)
-                const srcEscrowAddress = new Sdk.EscrowFactory(new Sdk.Address(src.escrowFactory)).getSrcEscrowAddress(
-                    srcEscrowEvent[0],
-                    await srcFactory.getSourceImpl()
-                )
-                console.log(`[EVM] Source Escrow deployed at ${srcEscrowAddress}`)
+        // Create the on-chain order using the keccak256-based hashLock.
+        const usdcAmount = parseUnits('100', 6)
+        const satsAmount = 10
+        // 1. Generate the secret in our test. This is the source of truth for the swap.
+        console.log(`[SYSTEM] Generated secret: ${secret_hex}`)
+
+
+
+        // 4. Create the on-chain order using the keccak256-based hashLock.
+        const order = Sdk.CrossChainOrder.new(
+            new Sdk.Address(src.escrowFactory),
+            {
+                maker: new Sdk.Address(await user.getAddress()),
+                makingAmount: usdcAmount,
+                takingAmount: BigInt(satsAmount),
+                makerAsset: new Sdk.Address(config.chain.source.tokens.USDC.address),
+                takerAsset: new Sdk.Address(BTC_SAT_ASSET)
+            },
+            {
+                hashLock,
+                timeLocks: Sdk.TimeLocks.new({
+                    srcWithdrawal: 10n,
+                    srcPublicWithdrawal: 7200n,
+                    srcCancellation: 7201n,
+                    srcPublicCancellation: 7202n,
+                    dstWithdrawal: 10n,
+                    dstPublicWithdrawal: 3600n,
+                    dstCancellation: 3601n
+                }),
+                srcChainId: src.chainId,
+                dstChainId: Sdk.NetworkEnum.BINANCE,
+                srcSafetyDeposit: parseEther('0.01'),
+                dstSafetyDeposit: 0n
+            },
+            {
+                auction: new Sdk.AuctionDetails({
+                    startTime: srcTimestamp,
+                    duration: 120n,
+                    initialRateBump: 0,
+                    points: []
+                }),
+                whitelist: [{address: new Sdk.Address(src.resolver), allowFrom: 0n}],
+                resolvingStartTime: 0n
+            },
+            {nonce: Sdk.randBigInt(UINT_40_MAX), allowPartialFills: false, allowMultipleFills: false}
+        )
+
+        const signature = await user.signOrder(src.chainId, order)
+        const resolverContract = new Resolver(src.resolver, '0x')
+
+        const {blockHash: srcDeployBlock} = await resolver.send(
+            resolverContract.deploySrc(
+                src.chainId,
+                order,
+                signature,
+                Sdk.TakerTraits.default().setExtension(order.extension).setAmountMode(Sdk.AmountMode.maker),
+                order.makingAmount
+            )
+        )
+        const srcEscrowEvent = await srcFactory.getSrcDeployEvent(srcDeployBlock!)
+        const srcEscrowAddress = new Sdk.EscrowFactory(new Sdk.Address(src.escrowFactory)).getSrcEscrowAddress(
+            srcEscrowEvent[0],
+            await srcFactory.getSourceImpl()
+        )
+        expect(srcEscrowAddress).toBeDefined()
+        console.log(`[EVM] Source Escrow deployed at ${srcEscrowAddress}`)
         // --- 4. USER VERIFIES AND LOCKS BTC ---
         const balance = await btcClient.getBalance();
         if (balance * 1e8 < btcAmountSats + 1000) throw new Error(`Insufficient BTC balance.`);
@@ -781,15 +785,10 @@ describe('1inch Fusion + Bitcoin Atomic Swap (BTC -> EVM)', () => {
         await src.provider.send('evm_increaseTime', [11]);
         await src.provider.send('evm_mine', []);
         await user.send(resolverContract.withdraw('src', srcEscrowAddress, secret_hex, srcEscrowEvent[0]));
-        resultBalances = await getBalances(
-            config.chain.source.tokens.USDC.address,
-            config.chain.destination.tokens.USDC.address
-        )
-        console.log(resultBalances)
-        console.log(`[EVM] User successfully claimed USDC. Secret is now public on-chain.`);
-        
+
         console.log('[SUCCESS] Atomic swap is complete. Secret has been revealed, allowing Resolver to claim BTC.');
     });
+
     
 });
 
@@ -820,18 +819,3 @@ async function deploy(json: any, params: unknown[], provider: JsonRpcProvider, d
     return await deployed.getAddress();
 }
 
-async function getBalances(
-    srcToken: string,
-    dstToken: string
-): Promise<{src: {user: bigint; resolver: bigint}; dst: {user: bigint; resolver: bigint}}> {
-    return {
-        src: {
-            user: await srcChainUser.tokenBalance(srcToken),
-            resolver: await srcResolverContract.tokenBalance(srcToken)
-        },
-        dst: {
-            user: await dstChainUser.tokenBalance(dstToken),
-            resolver: await dstResolverContract.tokenBalance(dstToken)
-        }
-    }
-}
