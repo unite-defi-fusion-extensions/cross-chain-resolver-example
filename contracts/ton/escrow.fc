@@ -2,6 +2,25 @@
 #include "error-codes.fc";
 #include "helpers.fc";
 
+;; -----------------------------------------------------------------
+() initialize_storage(slice in_msg_body) impure {
+    ;; Load current data
+    var (_, _, _, _) = load_data();
+    
+    ;; Read the jetton token wallet address from the message body
+    slice jettonWallet = in_msg_body~load_msg_addr();
+    
+    ;; Initialize with new values
+    cell swaps = new_dict();
+    cell hashlock_map = new_dict();
+    
+    set_data(begin_cell()
+        .store_slice(jettonWallet)
+        .store_uint(0, 64)
+        .store_dict(swaps)
+        .store_dict(hashlock_map)
+        .end_cell());
+}
 
 ;; -----------------------------------------------------------------
 ;; GETTERS (for off-chain calls)
@@ -16,8 +35,7 @@ slice get_jetton_wallet() method_id {
     return jettonWallet;
 }
 
-
-int get_has_swap(int swapId) method_id {
+int has_swap(int swapId) method_id {
     var (_, _, swaps, _) = load_data();
     var (_, found) = swaps.udict_get?(256, swapId);
     return found ? 1 : 0;
@@ -136,8 +154,6 @@ int get_has_swap(int swapId) method_id {
 
 ;; completeSwap: Completes a swap if a valid preimage is provided.
 () completeSwap(slice in_msg_body, int msg_value) impure {
-
-
     var (jettonWallet, swapCounter, swaps, hashlock_map) = load_data();
     
     int swapId = in_msg_body~load_uint(256);
@@ -147,8 +163,6 @@ int get_has_swap(int swapId) method_id {
     throw_unless(ERR_SWAP_NOT_FOUND, found);
     
     var (initiator, recipient, tokenAmount, hashLock, timeLock, isCompleted) = parseSwap(swapData);
-
-    var jettonWalletFluida = recipient;
     
     throw_if(ERR_SWAP_COMPLETED, isCompleted);
     
@@ -160,8 +174,8 @@ int get_has_swap(int swapId) method_id {
     builder newSwap = buildSwap(initiator, recipient, tokenAmount, hashLock, timeLock, 1);
     swaps~udict_set(256, swapId, newSwap.end_cell().begin_parse());
     
-    sendJettonTransfer(jettonWalletFluida, initiator, tokenAmount, msg_value);
-    save_data(jettonWalletFluida, swapCounter, swaps, hashlock_map);
+    sendJettonTransfer(jettonWallet, recipient, tokenAmount, msg_value);
+    save_data(jettonWallet, swapCounter, swaps, hashlock_map);
 }
 
 ;; -----------------------------------------------------------------
@@ -178,8 +192,12 @@ int get_has_swap(int swapId) method_id {
     
     int op = in_msg_body~load_uint(32);
 
+    (slice jettonWallet, int x, cell y, cell z) = load_data();
 
-
+    if (op == OP_INITIALIZE) {
+        initialize_storage(in_msg_body);
+        return ();
+    }
     
     if (op == OP_COMPLETE_SWAP) {
         completeSwap(in_msg_body, msg_value);
@@ -190,9 +208,7 @@ int get_has_swap(int swapId) method_id {
         refundSwap(in_msg_body, msg_value);
         return ();
     }
-   
-
-
+    
     if (op == 0x7362d09c) { ;; JETTON_TRANSFER_NOTIFICATION
         int queryId = in_msg_body~load_uint(64);
         int tokenAmount = in_msg_body~load_coins();
@@ -200,7 +216,7 @@ int get_has_swap(int swapId) method_id {
         try {
             throw_if(ERR_INVALID_FROM_ADDRESS, in_msg_body.slice_data_empty?());
         } catch (err) {
-            throw(242422424);
+            throw(ERR_FAILED_CHECKING_SLICE_DATA_EMPTY);
         }
     
         slice from_address = null();

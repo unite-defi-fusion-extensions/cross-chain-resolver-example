@@ -1,4 +1,6 @@
 // tests/ton-eth-bridge-fixed.spec.ts
+/* eslint-disable */
+
 import 'dotenv/config';
 import { expect, jest, beforeAll, afterAll, describe, it } from '@jest/globals';
 import * as fs from 'fs';
@@ -7,20 +9,18 @@ import assert from 'node:assert';
 // Ethereum Imports
 import { createServer, CreateServerReturnType } from 'prool';
 import { anvil } from 'prool/instances';
-import { ContractFactory, JsonRpcProvider, Wallet as SignerWallet, computeAddress, randomBytes, keccak256, parseUnits, MaxUint256, parseEther, Contract } from 'ethers';
+import { ContractFactory, JsonRpcProvider, Wallet as SignerWallet, computeAddress, randomBytes, keccak256, parseUnits, parseEther } from 'ethers';
 import factoryContract from '../dist/contracts/TestEscrowFactory.sol/TestEscrowFactory.json';
 import resolverContract from '../dist/contracts/Resolver.sol/Resolver.json';
 
 // Helper classes
 import { ChainConfig, config } from './config';
 import { Wallet } from './wallet';
-import { Resolver } from './resolver';
-import { EscrowFactory } from './escrow-factory';
 
 // TON Imports
 import { getHttpEndpoint } from '@orbs-network/ton-access';
 import { mnemonicToWalletKey } from '@ton/crypto';
-import { Address as TonAddress, Cell, TonClient, WalletContractV4, toNano, beginCell, Dictionary, fromNano } from '@ton/ton';
+import { Address as TonAddress, Cell, TonClient, WalletContractV4, toNano, beginCell, Dictionary } from '@ton/ton';
 import { Escrow as TonSwapContract, EscrowConfig as TonSwapConfig } from './ton-utils/EscrowDeploy';
 import { getJettonWalletAddress } from './ton-utils/getwalletAddress';
 
@@ -35,6 +35,7 @@ const tonResolverMnemonic = process.env.TON_RESOLVER_MNEMONIC!;
 const OP_COMPLETE_SWAP = 0x87654321;
 const OP_REFUND_SWAP = 0xabcdef12;
 const OP_DEPOSIT_NOTIFICATION = 0xdeadbeef;
+const OP_INITIALIZE = 1; // from Fluida.fc / initialize_storage
 
 // =================================================================================
 // ETHEREUM HELPER FUNCTIONS
@@ -83,7 +84,7 @@ async function initChain(cnf: ChainConfig): Promise<{ node: CreateServerReturnTy
 // =================================================================================
 // TON HELPER FUNCTIONS
 // =================================================================================
-async function waitForTonTransaction(client: TonClient, timeoutMs: number = 30000): Promise<void> {
+async function waitForTonTransaction(_client: TonClient, timeoutMs: number = 60000): Promise<void> {
     console.log(`⏳ Waiting ${timeoutMs / 1000} seconds for TON transaction...`);
     await new Promise((resolve) => setTimeout(resolve, timeoutMs));
 }
@@ -148,19 +149,6 @@ function createTonSwapDepositMessage(
 
 // Helper to create TON complete swap message
 function createTonCompleteSwapMessage(swapId: bigint, secret: Uint8Array) {
-
-
-    // TODO: FIX THIS IT SHOULD BE 
-
-    // await fluida.sendCompleteSwap(provider.sender(), {
-    //     swapId: targetSwapId,
-    //     preimage,
-    //     value: toNano('0.2'),
-    //   });
-    //   console.log("Complete swap transaction sent.");
-    // }
-
-
     return beginCell()
         .storeUint(OP_COMPLETE_SWAP, 32)
         .storeUint(0n, 64) // query_id
@@ -171,31 +159,10 @@ function createTonCompleteSwapMessage(swapId: bigint, secret: Uint8Array) {
 
 // Helper to create TON refund swap message
 function createTonRefundSwapMessage(swapId: bigint) {
-
-    // TODO: FIX THIS IT SHOULD BE 
-
-    // const messageBody = beginCell()
-    // .storeUint(OP_REFUND_SWAP, 32)  // OP code
-    // .storeUint(swapId!, 256)   // Swap ID as BigInt
-    // .endCell();
-
-    // console.log("Sending refund transaction...");
-
-    // // Send message
-    // try {
-    // const result = await provider.provider(fluidaAddress).internal(provider.sender(), {
-    //     value: toNano("0.2"),
-    //     sendMode: SendMode.PAY_GAS_SEPARATELY,
-    //     bounce: true,
-    //     body: messageBody,
-    // });
-
-
     console.log("SWAP TO REFUND", swapId)
     return beginCell()
         .storeUint(OP_REFUND_SWAP, 32)
-        .storeUint(0n, 64) // query_id
-        .storeUint(swapId, 256) // Note: your contract expects 256 bits for refund
+        .storeUint(swapId, 256) // contract expects 256 bits for refund id
         .endCell();
 }
 
@@ -229,16 +196,16 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
         ethResolver = new Wallet(resolverPk, ethChain.provider);
         ethResolverContract = await Wallet.fromAddress(ethChain.resolver, ethChain.provider);
 
-        // Fund ETH user and resolver with smaller amounts to avoid transfer issues
+        // Fund ETH user and resolver (reduced amounts)
         await ethUser.topUpFromDonor(
             config.chain.source.tokens.USDC.address,
             config.chain.source.tokens.USDC.donor,
-            parseUnits('100', 6) // Reduced amount
+            parseUnits('100', 6)
         );
         await ethResolverContract.topUpFromDonor(
             config.chain.source.tokens.USDC.address,
             config.chain.source.tokens.USDC.donor,
-            parseUnits('200', 6) // Reduced amount
+            parseUnits('200', 6)
         );
         await ethResolver.transfer(ethChain.resolver, parseEther('1'));
 
@@ -246,6 +213,9 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
 
         // --- SETUP TON CHAIN ---
         console.log('\n[2/4] 🔗 Setting up TON chain...');
+        if (!tonUserMnemonic) throw new Error('TON_USER_MNEMONIC not set in .env');
+        if (!tonResolverMnemonic) throw new Error('TON_RESOLVER_MNEMONIC not set in .env');
+
         const endpoint = await getHttpEndpoint({ network: 'testnet' });
         tonClient = new TonClient({ endpoint });
 
@@ -258,38 +228,75 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
         const resolverWallet = WalletContractV4.create({ publicKey: tonResolverKeyPair.publicKey, workchain: 0 });
         tonResolverWallet = tonClient.open(resolverWallet);
 
-        // Get jetton wallets
+        console.log(`✅ TON user wallet:      ${tonUserWallet.address.toString()}`);
+        console.log(`✅ TON resolver wallet:  ${tonResolverWallet.address.toString()}`);
+
+        // Get jetton wallets for users
         userJettonWallet = await getJettonWalletAddress(tonClient, tonUserWallet.address.toString());
         resolverJettonWallet = await getJettonWalletAddress(tonClient, tonResolverWallet.address.toString());
+
+        console.log(`✅ User jetton wallet:   ${userJettonWallet.toString()}`);
+        console.log(`✅ Resolver jetton wall: ${resolverJettonWallet.toString()}`);
 
         console.log(`✅ TON setup complete`);
 
         // --- SETUP TON SWAP CONTRACT ---
         console.log('\n[3/4] 📜 Setting up TON swap contract...');
+        if (!fs.existsSync('build/escrow.cell')) throw new Error('build/escrow.cell not found.');
         const escrowCode = Cell.fromBoc(fs.readFileSync('build/escrow.cell'))[0];
+        console.log('✅ Contract code loaded from build/escrow.cell');
 
         const tonConfig: TonSwapConfig = {
-            jettonWallet: TonAddress.parse('kQDoy1cUAbGq253vwfoPcqSloODVAWkDBniR12PJFUHnK6Yf'),
+            // Initial placeholder; will be overwritten by OP_INITIALIZE below.
+            jettonWallet: TonAddress.parse('kQBWqA0Zb6TmFlMUIoDlyAscUAcMQ3-1tae2POQ4Xl4xrw_V'),
             swapCounter: 0n,
             swaps: Dictionary.empty(),
             hashlock_map: Dictionary.empty(),
         };
 
         tonSwapContract = TonSwapContract.createFromConfig(tonConfig, escrowCode);
+        console.log(`📍 Calculated TON swap contract address: ${tonSwapContract.address.toString()}`);
+
         const onchainSwap = tonClient.open(tonSwapContract);
 
+        // Ensure deployed
         try {
             await onchainSwap.getSwapCounter();
-            console.log('✅ TON swap contract ready');
-        } catch (e) {
-            console.log('🚀 Deploying TON swap contract...');
+            console.log('✅ TON swap contract is already deployed and state is readable.');
+        } catch {
+            console.log('🚀 TON swap contract not deployed or state not readable. Deploying now...');
             const sender = tonUserWallet.sender(tonUserKeyPair.secretKey);
             await onchainSwap.sendDeploy(sender, toNano('0.1'));
+            console.log('⏳ Waiting for deployment to be confirmed...');
             await waitForTonTransaction(tonClient, 20000);
-            console.log('✅ TON swap contract deployed');
+            // Re-check
+            await onchainSwap.getSwapCounter();
+            console.log('✅ TON swap contract deployed and ready.');
         }
 
-        console.log('\n[4/4] ✅ Setup complete - ready for comprehensive testing!');
+        // --- INITIALIZE CONTRACT STORAGE (EVERY RUN) ---
+        console.log('\n🛠️ Initializing contract storage (OP_INITIALIZE)...');
+        // Compute Jetton wallet owned by the CONTRACT address itself
+        const contractJettonWallet = await getJettonWalletAddress(tonClient, tonSwapContract.address.toString());
+        console.log(`🔗 Contract's jetton wallet: ${contractJettonWallet.toString()}`);
+
+        const initBody = beginCell()
+            .storeUint(OP_INITIALIZE, 32)
+            .storeAddress(contractJettonWallet)
+            .endCell();
+
+        // Send OP_INITIALIZE from the user wallet (can be any authorized sender per your contract)
+        const initSender = tonUserWallet.sender(tonUserKeyPair.secretKey);
+        await initSender.send({
+            to: tonSwapContract.address,
+            value: toNano('0.05'),
+            body: initBody,
+            bounce: true,
+        });
+        await waitForTonTransaction(tonClient, 20000);
+        console.log('✅ Initialization message sent and applied (OP_INITIALIZE).');
+
+        console.log('\n[4/4] ✅ Setup + Initialization complete - ready for comprehensive testing!');
     });
 
     afterAll(async () => {
@@ -352,6 +359,7 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
         // Calculate the actual swap ID that was created
         const actualSwapId = newSwapCounter - 1n;
         console.log(`✅ TON swap created with ID: ${actualSwapId}`);
+        console.log(`📍 TON swap contract address: ${tonSwapContract.address.toString()}`);
 
         // Verify swap exists
         const hasSwap = await safeContractCall(
@@ -423,6 +431,7 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
         const newSwapCounter = await onchainTonSwap.getSwapCounter();
         const createdSwapId = newSwapCounter - 1n;
         console.log(`✅ Created swap with ID: ${createdSwapId}`);
+        console.log(`📍 TON swap contract address: ${tonSwapContract.address.toString()}`);
 
         console.log('\n[PHASE 2] 🔓 Complete swap with secret...');
 
@@ -450,23 +459,20 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
         const secret = randomBytes(32);
         const hashLock = keccak256(secret);
         const hashLockBigInt = BigInt(hashLock);
-        // Very short timelock for immediate refund testing
         const currentTime = Math.floor(Date.now() / 1000);
-        const timeLock = BigInt(currentTime - 10); // Already expired!
+        const timeLock = 1; // Already expired!
         const swapAmount = 1n;
 
         console.log('\n🔐 Refund Test Parameters:');
         console.log(`Secret: 0x${Buffer.from(secret).toString('hex')}`);
         console.log(`Hash: ${hashLock}`);
         console.log(`TimeLock: ${timeLock} (already expired for immediate refund)`);
+        console.log(`📍 TON swap contract address: ${tonSwapContract.address.toString()}`);
 
         const onchainTonSwap = tonClient.open(tonSwapContract);
-        const initialSwapCounter = await onchainTonSwap.getSwapCounter();
 
         console.log('\n[PHASE 1] 📤 Create swap with expired timelock...');
 
-        // Note: In real usage, you wouldn't create a swap with an expired timelock
-        // This is just for testing the refund mechanism
         const depositMessage = createTonSwapDepositMessage(
             swapAmount,
             tonUserWallet.address,
@@ -492,11 +498,9 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
         console.log('\n[PHASE 2] 🔄 Attempt refund...');
 
         const refundMessage = createTonRefundSwapMessage(createdSwapId);
-
         const refundSender = tonUserWallet.sender(tonUserKeyPair.secretKey);
 
-
-        await userSender.send({
+        await refundSender.send({
             to: tonSwapContract.address,
             value: toNano('0.2'),
             body: refundMessage
@@ -524,6 +528,7 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
             0n
         );
         console.log(`✅ Swap Counter: ${swapCounter}`);
+        console.log(`📍 TON swap contract address: ${tonSwapContract.address.toString()}`);
 
         // Test jetton wallet getter (if available)
         const jettonWallet = await safeContractCall(
@@ -532,13 +537,13 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
         );
 
         if (jettonWallet) {
-            console.log(`✅ Jetton Wallet: ${jettonWallet}`);
+            console.log(`✅ Jetton Wallet (from contract): ${jettonWallet}`);
         } else {
             console.log(`⚠️ Jetton Wallet getter not available (method may not be exposed)`);
         }
 
         // Test swap existence for recent swaps
-        if (swapCounter && swapCounter > 0n) {
+        if (typeof swapCounter === 'bigint' && swapCounter > 0n) {
             const recentSwapId = swapCounter - 1n;
             const hasSwap = await safeContractCall(
                 () => onchainTonSwap.getHasSwap(recentSwapId),
@@ -568,7 +573,6 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
         console.log('\n✅ CONTRACT STATE READING SUCCESSFUL!');
         console.log('✅ Basic getters working');
         console.log('✅ Swap data accessible');
-        console.log('✅ Ready for cross-chain coordination');
     });
 
     it('should demonstrate complete cross-chain bridge concept', async () => {
@@ -586,6 +590,7 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
         console.log(`Hash: ${hashLock}`);
         console.log(`TON TimeLock: ${tonTimeLock} (longer)`);
         console.log(`ETH TimeLock: ${ethTimeLock} (shorter for user protection)`);
+        console.log(`📍 TON swap contract address: ${tonSwapContract.address.toString()}`);
 
         // Record initial balances
         const initialEthUserUsdc = await ethUser.tokenBalance(config.chain.source.tokens.USDC.address);
@@ -601,7 +606,6 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
         console.log('\n[Phase 1] 📤 User creates TON swap');
 
         const onchainTonSwap = tonClient.open(tonSwapContract);
-        const initialSwapCounter = await onchainTonSwap.getSwapCounter();
 
         const depositMessage = createTonSwapDepositMessage(
             1n,
@@ -653,6 +657,5 @@ describe('TON <-> ETH Complete Atomic Bridge (Fixed)', () => {
         });
 
         await waitForTonTransaction(tonClient);
-
     });
 });

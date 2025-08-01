@@ -2,7 +2,7 @@
 import {Address, TonClient, TupleBuilder} from '@ton/ton'
 
 // This is the Jetton Master address for jUSDT on the testnet.
-const JETTON_MASTER_ADDRESS = 'kQDoy1cUAbGq253vwfoPcqSloODVAWkDBniR12PJFUHnK6Yf'
+const JETTON_MASTER_ADDRESS = 'kQBWqA0Zb6TmFlMUIoDlyAscUAcMQ3-1tae2POQ4Xl4xrw_V'
 
 /**
  * Queries the `get_wallet_address` method on a Jetton master contract.

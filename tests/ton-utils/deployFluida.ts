@@ -28,7 +28,7 @@ export async function run(provider: NetworkProvider) {
 
         // 3) Configure the Fluida contract including hashlock_map.
         const fluidaConfig: FluidaConfig = {
-            jettonWallet: Address.parse('EQCw-TMDSxfgF3Pkzu59ZCNh5cTonlSwNMk2hyI9znwUQ7V0'),
+            jettonWallet: Address.parse('kQBWqA0Zb6TmFlMUIoDlyAscUAcMQ3-1tae2POQ4Xl4xrw_V'), // JETTON TO SWAP
             swapCounter: 0n,
             swaps: emptySwaps,
             hashlock_map: emptyHashlockMap
