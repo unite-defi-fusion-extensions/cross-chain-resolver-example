@@ -108,7 +108,18 @@ sequenceDiagram
 
 ### Example 2: On-Chain Bitcoin Swap
 **Scenario:** User buys USDC with BTC  
-**Test File:** `bitcoin.spec.ts`
+**Test File:** `bitcoin.spec.ts` <br/>
+**Bitcoin HTLC:**
+
+```code
+OP_IF
+    # Claim path: requires a valid signature and the correct secret
+    OP_SHA256 <hash_of_secret> OP_EQUALVERIFY <resolver_pubkey> OP_CHECKSIG
+OP_ELSE
+    # Refund path: requires the timelock to have passed and the user's signature
+    <locktime> OP_CHECKLOCKTIMEVERIFY OP_DROP <user_pubkey> OP_CHECKSIG
+OP_ENDIF
+```
 
 #### Flow Diagram
 ```mermaid
