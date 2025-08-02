@@ -62,6 +62,7 @@
     "dotenv": "16.4.5",
     "ethers": "6.13.2",
     "prool": "0.0.24",
+    "readline-sync": "^1.4.10",
     "ton": "^13.9.0",
     "ton-core": "^0.53.0",
     "ton-crypto": "^3.2.0"

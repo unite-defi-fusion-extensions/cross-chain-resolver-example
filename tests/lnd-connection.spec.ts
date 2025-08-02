@@ -84,7 +84,6 @@ describe('LND Node Connection Test', () => {
             console.log(`Attempting to connect to LND at: ${LND_RPC}/v1/getinfo`)
 
             const {data: info} = await lnd.get('/v1/getinfo')
-
             console.log('Successfully received response from LND:')
             console.log({
                 identity_pubkey: info.identity_pubkey,
